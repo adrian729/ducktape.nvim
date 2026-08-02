@@ -122,3 +122,18 @@ config.setup({ keymaps = false })
 ok(not keys.globals_enabled(), "globals are off")
 eq("but a key still has a name to print", keys.lhs("cancel"), "<leader>cx")
 eq("and the diff keys are untouched", keys.lhs("diff_accept"), "g2")
+
+section("the same shorthand through vim.g, which is the route plugin/ reads")
+-- plugin/ducktape.lua asks config.get(), not config.setup(): it runs long before any extension
+-- opts exist. Normalising the shorthand in setup alone let `vim.g.ducktape = { keymaps = false }`
+-- create the whole default set it asked to suppress — measured in a real config, not theorised.
+vim.g.ducktape = { keymaps = false }
+package.loaded["ducktape.config"] = nil
+package.loaded["ducktape.keys"] = nil
+local g_keys = require("ducktape.keys")
+ok(not g_keys.globals_enabled(), "globals are off with no setup having run at all")
+eq("and a key still has a name", g_keys.lhs("cancel"), "<leader>cx")
+eq("and the diff keys are untouched", g_keys.lhs("diff_accept"), "g2")
+vim.g.ducktape = nil
+package.loaded["ducktape.config"] = nil
+package.loaded["ducktape.keys"] = nil

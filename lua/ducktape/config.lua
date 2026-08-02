@@ -185,13 +185,26 @@ M.defaults = {
 ---@type table|nil
 local resolved
 
+---`keymaps = false` is a shorthand the deep merge cannot express, so it is normalised into the table
+---form the rest of the code reads. Applied on both routes: `plugin/ducktape.lua` asks `M.get()` for
+---the keymaps long before any `setup()` runs, so normalising only in `setup` would leave
+---`vim.g.ducktape = { keymaps = false }` creating the whole default set it asked to suppress.
+---@param cfg table
+---@return table
+local function normalise(cfg)
+	if cfg.keymaps == false then
+		cfg.keymaps = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults.keymaps), { globals = false })
+	end
+	return cfg
+end
+
 ---The merged configuration. Reads `vim.g.ducktape` on first call so `plugin/ducktape.lua` can ask
 ---for it before any `setup()` has run.
 ---@return table
 function M.get()
 	if not resolved then
 		local from_g = type(vim.g.ducktape) == "table" and vim.g.ducktape or {}
-		resolved = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), from_g)
+		resolved = normalise(vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), from_g))
 	end
 	return resolved
 end
@@ -205,13 +218,7 @@ end
 ---@return table
 function M.setup(opts)
 	opts = opts or {}
-	local cfg = vim.tbl_deep_extend("force", M.get(), opts)
-
-	-- `keymaps = false` is a shorthand the deep merge cannot express, so it is normalised here
-	-- into the table form the rest of the code reads.
-	if cfg.keymaps == false then
-		cfg.keymaps = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults.keymaps), { globals = false })
-	end
+	local cfg = normalise(vim.tbl_deep_extend("force", M.get(), opts))
 
 	vim.validate({
 		providers = { cfg.providers, "table" },
