@@ -123,19 +123,20 @@ function M.send(provider, prompt)
 	})
 end
 
-function M.setup()
-	vim.api.nvim_create_user_command("DucktapePoolStatus", function()
-		M.pool_status()
-	end, { desc = "AI: live ACP connections" })
-
-	vim.api.nvim_create_user_command("DucktapeDebugSend", function(args)
-		local provider = args.fargs[1]
-		local prompt = table.concat(vim.list_slice(args.fargs, 2), " ")
-		if not provider or prompt == "" then
-			return ui.say("usage: :Ducktape send {provider} {prompt}", vim.log.levels.ERROR)
-		end
-		M.send(provider, prompt)
-	end, { nargs = "+", desc = "AI: send a raw prompt through the pool" })
+---`:Ducktape send {provider} {prompt}`. The command itself lives in plugin/ducktape.lua, which
+---registers it without loading this module; this is only the argument handling.
+---@param args string[] Everything after the subcommand
+function M.send_command(args)
+	local provider = args[1]
+	local prompt = table.concat(vim.list_slice(args, 2), " ")
+	if not provider or prompt == "" then
+		return ui.say("usage: :Ducktape send {provider} {prompt}", vim.log.levels.ERROR)
+	end
+	M.send(provider, prompt)
 end
+
+-- Nothing to register any more: both entry points are subcommands of `:Ducktape`. Kept as a no-op
+-- so the setup sequence reads the same for every module it initialises.
+function M.setup() end
 
 return M
