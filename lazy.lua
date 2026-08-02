@@ -11,7 +11,7 @@
 -- themselves with its own trigger and lists ducktape in its `extensions`. See the README.
 return {
 	{
-		"adrian-daedalus/ducktape.nvim",
+		"adrian729/ducktape.nvim",
 		lazy = false,
 		dependencies = {
 			"nvim-lua/plenary.nvim",

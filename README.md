@@ -52,7 +52,7 @@ stays deferred and is pulled in by your first ducktape action.
 
 ```lua
 {
-  "adrian-daedalus/ducktape.nvim",
+  "adrian729/ducktape.nvim",
   lazy = false,                     -- required: plugin/ducktape.lua owns the keymaps
 },
 {
@@ -82,7 +82,7 @@ vim.pack.add({
   { src = "https://github.com/nvim-treesitter/nvim-treesitter" },
   { src = "https://github.com/nvim-telescope/telescope.nvim" },
   { src = "https://github.com/olimorris/codecompanion.nvim" },
-  { src = "https://github.com/adrian-daedalus/ducktape.nvim",
+  { src = "https://github.com/adrian729/ducktape.nvim",
     version = vim.version.range("1.0") },
 })
 

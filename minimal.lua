@@ -33,7 +33,7 @@ vim.opt.runtimepath:prepend(lazypath)
 require("lazy").setup({
 	root = root .. "/plugins",
 	spec = {
-		-- `dir` so this tests the working copy. Point it at "adrian-daedalus/ducktape.nvim" to
+		-- `dir` so this tests the working copy. Point it at "adrian729/ducktape.nvim" to
 		-- reproduce against a release instead.
 		{ dir = vim.fn.fnamemodify(".", ":p"), lazy = false },
 
