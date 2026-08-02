@@ -1,2 +1,4 @@
+.deps/
 tests/.deps/
 doc/tags
+.repro/

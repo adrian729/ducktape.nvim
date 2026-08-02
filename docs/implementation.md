@@ -6,51 +6,60 @@ The old integration had three fundamental problems. First, inline edits ran on l
 
 The rebuild replaced this with a single idea: **nvim owns placement; the model only supplies code.** All four transports share the same prompt contract, the same parsing layer, and the same diff UI. Providers and their options are defined once in `providers.lua` and read by inline, chat and the status panel — which is what makes the UX shared instead of reimplemented per surface.
 
-The old integration was deleted entirely (step 00) rather than migrated feature by feature. Keeping both alive would have meant every step reasoning about two implementations bound to the same keys.
+The old integration was deleted entirely before the rebuild started, rather than migrated feature by feature. Keeping both alive would have meant every step reasoning about two implementations bound to the same keys.
 
 ## Module layout and responsibilities
 
 ```
-lua/ai/
+lua/ducktape/
+  init.lua            setup: installs the adapters, the send override and the persistence hook
+  config.lua          every knob, and the adapter definitions carrying the write defence, as data
+  keys.lua            the one place that knows what a key is called; every message reads it
+  health.lua          :checkhealth ducktape — deps, parsers, CodeCompanion internals, binaries
   providers.lua       single source of truth: providers, options, defaults, selection, model lists
   acp_pool.lua        lazy ACP connections, overflow spawning, idle reaping, safety verification
-  debug.lua           :AiPoolStatus and :AiDebugSend smoke harness
+  debug.lua           :Ducktape pool and :Ducktape send smoke harness
   inline/
     init.lua          prompt, placement, extmark anchoring, diff, accept/reject, concurrency, cancel
     parse.lua         fence stripping, prose and tool-call-leak detection
     http.lua          ollama local + cloud transports (curl over CodeCompanion's HTTP client)
     acp.lua           claude and opencode over ACP — ci/cI differ by prompt only
-    relay.lua         opencode via the opencode-llm script — ci only, guaranteed tool-free
+    relay.lua         opencode via the opencode-llm program — ci only, guaranteed tool-free
     list.lua          live float: every request in flight and every diff still to settle
   statusline.lua      the one always-visible count of what inline has in play
   chat.lua            new chat with preset options, toggle, close-all, adapter resolution
   chat_edit.lua       what <CR> does in a chat: fixes the parse boundary, carries an edited history
   chat_list.lua       Telescope picker: live chats + resumable sessions from outside nvim
+  pick.lua            the provider/model float: one confirmed change rather than per-keystroke
+  reload.lua          open buffers follow an agent's edits, unless you have unsaved changes
   status.lua          interactive option panel: reads providers.lua schema, applies to live sessions
   ui.lua              shared: in-flight range marking, prose-float message window, list rendering
+
+lua/codecompanion/_extensions/ducktape/init.lua   the extension entry point CodeCompanion resolves
+plugin/ducktape.lua                               <Plug> maps, defaults, statusline, :Ducktape
 ```
 
-`lua/plugins/codecompanion.lua` is kept to a lazy spec, adapter definitions, keymaps, and the `setup()` call. No logic lives there — everything is in the `ai/` modules.
+`config.lua` holds the adapter definitions and the keymap table as data, `plugin/ducktape.lua` creates the mappings and the statusline segment, and `init.lua` is the setup that installs everything into CodeCompanion's live config. No logic lives in any of the three — everything is in the modules above.
 
 CodeCompanion's ACP **client** (`acp/init.lua`, `acp/prompt_builder.lua`, etc.) is used directly — `Connection.new`, `connect_and_authenticate`, `session_prompt`, `on_message_chunk`, `on_complete`, `on_error`. These are all public and chat-agnostic. The built-in inline (`interactions/inline`) is not used at all; it hard-gates on `self.adapter.type ~= "http"`, so it cannot reach ACP transports.
 
 ## Provider architecture
 
-`providers.lua` (`lua/ai/providers.lua`) is the runtime form of the provider schema. It defines:
+`providers.lua` (`lua/ducktape/providers.lua`) is the runtime form of the provider schema. It defines:
 
 - **Which providers exist** — `ollama`, `claude`, `opencode`
 - **What options each carries** — per scope (inline/chat), with labels, categories (for ACP session config mapping), value lists, and dynamic model resolvers
 - **What is currently selected** — stored per scope (`inline` and `chat`), with per-provider option tables
-- **What each transport can reach** — `M.transports` is the canonical table from the measurements in `_codecompanion/findings.md`: HTTP and relay can touch nothing; ACP can read any file the user can but writes are denied
+- **What each transport can reach** — `M.transports` is the canonical table, and it was measured rather than assumed: HTTP and relay can touch nothing; ACP can read any file the user can but writes are denied. Neither agent uses the client-mediated `fs/*` path, so reach is decided by the agent process rather than by us
 
-Defaults are free-first per `AGENTS.md`:
+Defaults are free-first by policy:
 - Inline: ollama cloud `gpt-oss:120b` — ~4s, free, no local RAM
-- Chat: claude `opus`, effort `xhigh`, mode `acceptEdits`
+- Chat: claude `opus`, effort `xhigh`, mode `default` — the agent asks before it writes, and CodeCompanion answers with a diff of the proposed change
 
 Model lists resolve dynamically and are cached per nvim session:
 - Ollama local: `curl localhost:11434/api/tags`
 - Ollama cloud: `curl https://ollama.com/api/tags` with `OLLAMA_API_KEY`
-- OpenCode: parsed from `~/.local/config/opencode-models.json` (same file `opencode-llm` reads), falling back through `$XDG_CONFIG_HOME/opencode/` and `~/.config/opencode/`
+- OpenCode: parsed from the same `opencode-models.json` the relay program reads, looked for at `$XDG_CONFIG_HOME/opencode/`, then `~/.config/opencode/`, then `~/.local/config/` — configurable with `opts.opencode.models_json`
 - Claude: the static list matches what the live ACP session offers; the status panel re-resolves from the connection
 
 The `auto` sentinel for opencode's model means "let opencode-llm walk its free-tier fallback list" — meaningful on the relay, but on an ACP session it resolves to the head of that list so it never lands on opencode's ambient default (currently the paid-tier-adjacent `big-pickle`).
@@ -175,7 +184,7 @@ The second is a message wider than the command line, and nothing takes that prom
 
 Nothing is lost to the fitting. For a message that does not fit, `'cmdheight'` is grown just far enough for the echo that enters the message history and put back before the next redraw, so `:messages` has every word while the command line shows only the head. That is a trick and it was measured before being trusted: with three splits and a floating window open, no `VimResized` or `WinResized` fired, window heights were unchanged and the float kept its geometry — nvim never applies a layout change that is reverted before it redraws.
 
-`vim.notify` is gone from the ai modules for the same reason it was never enough on its own: with no notification plugin installed it is this same echo, only without the fitting. `providers.lua` reaches it through a call-time `require` rather than a module-scope one, because it is the module every other module reads and it stays free of dependencies of its own.
+`vim.notify` is gone from the ducktape modules for the same reason it was never enough on its own: with no notification plugin installed it is this same echo, only without the fitting. `providers.lua` reaches it through a call-time `require` rather than a module-scope one, because it is the module every other module reads and it stays free of dependencies of its own.
 
 **A reply that cannot be applied is registered, not thrown at the screen** (`wait_on_user`). Prose, a refusal, leaked tool markup, a transport error, and a reply whose buffer is on screen nowhere all leave something the user must decide about and none can be written into the buffer. They used to be fire-and-forget: prose opened a float with `enter = true`, and an error was a `vim.notify` and nothing else. Both were lossy — the float *was* the only copy, so dismissing it destroyed the text and the chat hand-off, and a notify scrolls away with no notification plugin installed.
 
@@ -187,7 +196,7 @@ They are now a third entry kind (`prose`/`failed`) in the registry's `waiting` t
 
 **`x and f()` truncates a two-value return to one.** `local s0, e0 = entry.marks and resolve(...)` left `e0` nil at four call sites, which is why the waiting entries went through a `waiting_region` helper instead. Worth remembering: the pattern reads as a safe nil-guard and silently discards the second value.
 
-**The statusline segment is injected, not assigned** (`ai.statusline`, wired in `config/options.lua`). On this nvim version `'statusline'` is *not* empty — the default carries the terminal exit code, `vim.ui.progress_status()`, `showcmdloc`, `b:keymap_name`, the `&busy` indicator, `vim.diagnostic.status()` and the ruler — so writing the documented "equivalent" over it would quietly drop all of that. The segment is spliced in just before the `%{% &ruler ?` chunk, falling back to an append if that is ever renamed. `render()` is wrapped in `pcall` returning `""`, because an error in a statusline expression is not a message but a broken bar on every redraw for the rest of the session; and it reads `package.loaded["ai.inline"]` rather than requiring it, so drawing an empty segment never drags the provider and pool machinery into startup.
+**The statusline segment is injected, not assigned** (`ducktape.statusline`, injected from `plugin/ducktape.lua` so it is present on the first redraw rather than whenever CodeCompanion happens to load). On this nvim version `'statusline'` is *not* empty — the default carries the terminal exit code, `vim.ui.progress_status()`, `showcmdloc`, `b:keymap_name`, the `&busy` indicator, `vim.diagnostic.status()` and the ruler — so writing the documented "equivalent" over it would quietly drop all of that. The segment is spliced in just before the `%{% &ruler ?` chunk, falling back to an append if that is ever renamed. `render()` is wrapped in `pcall` returning `""`, because an error in a statusline expression is not a message but a broken bar on every redraw for the rest of the session; and it reads `package.loaded["ducktape.inline"]` rather than requiring it, so drawing an empty segment never drags the provider and pool machinery into startup.
 
 **The cursor and the view are held across a diff landing** (`hold_view`/`release_view`). DiffUI scrolls to the first hunk when it renders (`diff/ui.lua:603` → `scroll_to_line`, a `:LINE` plus `normal! zz` in the window showing the buffer). A request runs for seconds and lands whenever it lands, so that is a cursor yanked out of whatever was being typed and a view recentred under it. Every window on the buffer has its `winsaveview()` taken beforehand, plus a left-gravity extmark on the cursor's line — the line number alone is not enough, since the diff writes its own rows in and the cursor's text may have moved. The restore is `vim.schedule`d from *after* `show_diff` returns, which puts it behind DiffUI's own scheduled scroll (`vim.schedule` is FIFO), and the window is scrolled by however far the cursor's line moved so the line stays in the same screen position.
 
@@ -222,15 +231,15 @@ The chat buffer is fully modifiable between turns, and the transcript in it is a
 
 **Editing history also corrupted the next send**, which is the part that made this a bug rather than a missing feature. `header_line` is a line number captured when the reply landed (`ready_for_input`, from the builder's tracked header row) and nothing re-derives it, so every line added or removed above it shifts the parse window. Measured on a two-turn buffer: with the correct value the prompt reads as `"second question"`; two lines of history deleted and `parser.messages` returns nil, so submit substitutes `blank_prompt`; four lines added and it returns `"first question\n\n\nsecond question"`. `M.send` re-derives the boundary from `parser.headers(chat)` on every send, whichever way the user answers, so the mis-send is fixed independently of the fork.
 
-**The hook is the `send` keymap, not `on_before_submit`.** The cancellable dispatch happens *after* `parser.messages` has already run and after the early `return log:warn("No messages to submit")`, so a callback there cannot correct `header_line` in time. `interactions.chat.keymaps.send.callback` is overridden with a function in `codecompanion.lua` instead; config is `tbl_deep_extend`ed, so the keys, index and description come from the plugin's own definition and only the callback is ours.
+**The hook is the `send` keymap, not `on_before_submit`.** The cancellable dispatch happens *after* `parser.messages` has already run and after the early `return log:warn("No messages to submit")`, so a callback there cannot correct `header_line` in time. `interactions.chat.keymaps.send.callback` is overridden from `ducktape.setup` instead; only the callback is replaced, so the keys, index and description come from CodeCompanion's own definition. The assignment is guarded, because `config.setup` strips keymaps a user disabled and `send = false` would otherwise make it a nil index — inside the `pcall` CodeCompanion loads extensions in, that would abort every step after it.
 
 **Detection snapshots the text, not the messages.** `baseline[bufnr]` holds lines `0..rows` as they stood at the last `on_ready`, which is both the end of a turn and the end of a restore (`acp/render.lua`'s `restore_session` finishes by calling `ready_for_input`). Diffing against `chat.messages` was rejected because the agent's words are as editable as the user's and never round-trip through the message table — and a restored chat has no message table at all. An absent baseline is adopted rather than treated as an edit, which covers a restored transcript ending on a user message, where `on_ready` never fires.
 
-**The swap is a session, not a process.** `conn.session_id = nil` followed by `ensure_session()` makes `_establish_session` take its create branch instead of its load branch, reusing the live subprocess and handshake — one `session/new` round trip. Then `link_buffer_to_session`, `_ai_resumable = nil` (the new session holds nothing until this turn completes, so it is not yet worth saving), and the edited conversation added as a single invisible unsent user message. `submit()` appends the question as a second one, so `form_messages` puts the transcript and the question on the wire in that order and the buffer is never rewritten to make it happen. A refused `session/new` puts the old ID back, so a failure leaves the chat exactly as it was — and the question is deliberately *not* sent then, since sending it would answer against the conversation the agent still remembers and quietly ignore the edit, which is the behaviour this replaces.
+**The swap is a session, not a process.** `conn.session_id = nil` followed by `ensure_session()` makes `_establish_session` take its create branch instead of its load branch, reusing the live subprocess and handshake — one `session/new` round trip. Then `link_buffer_to_session`, `_ducktape_resumable = nil` (the new session holds nothing until this turn completes, so it is not yet worth saving), and the edited conversation added as a single invisible unsent user message. `submit()` appends the question as a second one, so `form_messages` puts the transcript and the question on the wire in that order and the buffer is never rewritten to make it happen. A refused `session/new` puts the old ID back, so a failure leaves the chat exactly as it was — and the question is deliberately *not* sent then, since sending it would answer against the conversation the agent still remembers and quietly ignore the edit, which is the behaviour this replaces.
 
 **Not offered as a choice.** The first version asked — fork / send as-is / cancel — which was wrong: the user edited the conversation and then asked about it, which already says what they want. The swap is how that is delivered, not a decision to hand back.
 
-**The title is carried across the swap** (`carry_title`), or the chat renames itself out from under the user: the agent pushes a fresh auto-title at the end of every turn and the new session's would be generated from the replayed transcript. The pre-swap title is pinned as `_ai_user_title`, which is the flag chat.lua's BufFilePost guard already re-asserts over the agent's, and re-keyed in `chat_titles.json` so it survives a restart. The `provider · model` placeholder is excluded — it is not a name, and pinning it would stop the chat ever auto-titling itself. The name is also taken *off* the session being left behind, so the two do not sit in `<leader>cl` under one name.
+**The title is carried across the swap** (`carry_title`), or the chat renames itself out from under the user: the agent pushes a fresh auto-title at the end of every turn and the new session's would be generated from the replayed transcript. The pre-swap title is pinned as `_ducktape_user_title`, which is the flag chat.lua's BufFilePost guard already re-asserts over the agent's, and re-keyed in `chat_titles.json` so it survives a restart. The `provider · model` placeholder is excluded — it is not a name, and pinning it would stop the chat ever auto-titling itself. The name is also taken *off* the session being left behind, so the two do not sit in `<leader>cl` under one name.
 
 **The session left behind is not deleted, and cannot usefully be.** It was tried: `session/delete` over the connection that has just moved off it is answered with success and the session is still listed afterwards — measured directly, `old listed: true` against a 140-session store. Which is the same finding chat.lua's own delete path documents from the other direction, and the reason it insists on a *different connection*: it is the still-live agent **process** that writes the transcript back, not the session pointer. Making it stick would mean respawning the agent mid-chat. So the pre-edit conversation stays resumable under `<leader>cl`, which doubles as the way back from an edit the user regrets, and `<C-x>` there removes it.
 
@@ -294,7 +303,7 @@ Three independent layers keep inline from writing to disk, listed from actual to
 
 **Why `<leader>cI` is prompt-deep only on claude**: same adapter, same pool, same mode, same capabilities. The behavioural gap — ~5s and no tools versus ~27s and repo reads — comes entirely from the prompt wording. It is a speed-and-intent choice, not a security boundary. On opencode the two are genuinely different transports (relay vs ACP), and on ollama `cI` does not exist. So the pair means something different on each provider, which is a UX wart worth watching.
 
-**Why an in-flight request is marked with a virtual line and a tint, not end-of-line text**: end-of-line text on the first row says nothing about how far down the request reaches, so a multiline selection was indistinguishable from a single-line one — and the extent is exactly what decides whether an edit of yours is about to be overwritten. The label moves to a line of its own above the range, indented to the code it belongs to, and the range itself carries an `AiInlineRange` background. The line count is spelled out in the label as well as shown in colour, because a tint is easy to miss and competes with `CursorLine` on the row the cursor sits on. `ui.progress` keeps the end-of-line form for callers that pass a single row rather than a range — the chat spinner, where there is no extent to show and pushing the buffer down by a line would be noise.
+**Why an in-flight request is marked with a virtual line and a tint, not end-of-line text**: end-of-line text on the first row says nothing about how far down the request reaches, so a multiline selection was indistinguishable from a single-line one — and the extent is exactly what decides whether an edit of yours is about to be overwritten. The label moves to a line of its own above the range, indented to the code it belongs to, and the range itself carries an `DucktapeInlineRange` background. The line count is spelled out in the label as well as shown in colour, because a tint is easy to miss and competes with `CursorLine` on the row the cursor sits on. `ui.progress` keeps the end-of-line form for callers that pass a single row rather than a range — the chat spinner, where there is no extent to show and pushing the buffer down by a line would be noise.
 
 **The two range colours are washes, and which two hues they are was measured.** A running range is mauve at 18% over the editor background (`#3d3652` on Mocha); a range whose reply is waiting on you is peach at the same depth (`#46393e`). Which of the pair means which is preference — they were swapped once already — but the pair itself is not arbitrary. Both are built by a `wash` helper in `ui.lua`, which mixes a palette colour into `Normal`'s background rather than hardcoding a hex — catppuccin builds its own diff backgrounds exactly this way (its `DiffDelete` *is* the palette red at 18% over `base`, to the byte), so a wash at that depth sits with the theme, and deriving it means another flavour or a light theme gets a wash of the right depth for its own background instead of one tuned against this one.
 
@@ -310,4 +319,4 @@ The overlay itself is `ui.help`, extracted from the chat list rather than writte
 
 **The inline list opens with nothing in it.** It used to answer `<leader>cL` with a command-line message when there was nothing in play, which reads as "the key did nothing" to anyone not watching that line — and the window is where the answer was expected. The empty state already existed for settling the last row from inside the list (`lines_for` writes "nothing in flight, nothing waiting on you", `title_for` titles it "all settled"), so opening onto it costs nothing; only the early return had to go, plus a nil-safe `view.order`. Every key already guarded against an empty selection, and the window cannot be caught out by a request arriving while it is open and empty — if nothing is running, nothing can land.
 
-**Why the debug harness (`:AiPoolStatus` / `:AiDebugSend`) stays in the final build**: it is the seam where a transport problem is distinguishable from a parsing or placement problem. `:AiDebugSend` does no parsing, no placement and no buffer mutation — it sends a raw prompt through the pool and shows the reply in a scratch buffer. When a later change misbehaves, this is the first thing to reach for.
+**Why the debug harness (`:Ducktape pool` / `:Ducktape send`) stays in the final build**: it is the seam where a transport problem is distinguishable from a parsing or placement problem. `:Ducktape send` does no parsing, no placement and no buffer mutation — it sends a raw prompt through the pool and shows the reply in a scratch buffer. When a later change misbehaves, this is the first thing to reach for.

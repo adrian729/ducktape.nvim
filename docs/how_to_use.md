@@ -1,4 +1,4 @@
-# How to use the AI integration
+# How to use ducktape
 
 ## Inline editing
 
@@ -113,10 +113,10 @@ Press `<leader>cL`. One row per inline edit that has not been settled: requests 
 
 ```
 ┌ Inline — 2 thinking · 1 to review · 1 to read ──────────────────────────────────────────┐
-│▶ ◆ review        0s  ollama · gpt-oss:120b  lua/ai/inline/parse.lua:1  make this a s…  │
-│  ⠋ thinking     12s  ollama · gpt-oss:120b  lua/ai/pick.lua:2          add a b key s…  │
-│  ◆ answered     31s  ollama · gpt-oss:120b  lua/ai/status.lua:88       why is this s…  │
-│  ⠋ thinking      4s  claude · sonnet        lua/ai/chat.lua:2          explain the r…  │
+│▶ ◆ review        0s  ollama · gpt-oss:120b  lua/parser/tokenize.lua:4  make this a s…  │
+│  ⠋ thinking     12s  ollama · gpt-oss:120b  lua/app/cli.lua:2          add a b key s…  │
+│  ◆ answered     31s  ollama · gpt-oss:120b  lua/app/status.lua:8       why is this s…  │
+│  ⠋ thinking      4s  claude · sonnet        lua/app/net.lua:2          explain the r…  │
 └──────────────── a accept · r again · x discard · ? keys ────────────────────────────────┘
 ```
 
@@ -155,7 +155,7 @@ A reply that arrives while its buffer is on screen *nowhere* still cannot be app
 A segment appears in your statusline whenever inline has anything in play, and is empty otherwise:
 
 ```
-lua/ai/retry.lua        AI 2↻ 1◆        12,4        45%
+lua/app/retry.lua       AI 2↻ 1◆        12,4        45%
 ```
 
 `↻` still running · `◆` answered, or an edit waiting on you · `✖` failed. This is the only signal that reaches you when the file in question is not on screen at all — the marks are in the buffer and the list is behind a key, and a message scrolls away.
@@ -178,11 +178,11 @@ Press `<leader>cmi`. One flat Telescope list of every provider/model pair, so fi
 
 | Label | Means | Where that comes from |
 |---|---|---|
-| `free` | Free tier, consumes nothing | opencode's `opencode/…` prefix, per `MODELS.md` |
+| `free` | Free tier, consumes nothing | opencode's own `opencode/…` prefix |
 | `free · local` | Runs on this machine — no account, no quota | ollama with `endpoint = local` |
-| `free · cloud` | Free tier, but rate-limited: light GPU-time, 1 concurrent model | `MODELS.md`, "Ollama Cloud (Free)" |
-| `subscription · claude` | Counts against your Claude plan | claude-agent-acp authenticates with `CLAUDE_CODE_OAUTH_TOKEN`; there is no `ANTHROPIC_API_KEY` in this config |
-| `subscription · Go` | Counts against your OpenCode Go plan | `MODELS.md`, "Limits" — $12/5h, $30/wk, $60/mo rolling windows, and "Free models don't count" |
+| `free · cloud` | Free tier, but rate-limited: light GPU-time, 1 concurrent model | Ollama Cloud's own free-tier terms |
+| `subscription · claude` | Counts against your Claude plan | claude-agent-acp authenticates with `CLAUDE_CODE_OAUTH_TOKEN`; no `ANTHROPIC_API_KEY` is used |
+| `subscription · Go` | Counts against your OpenCode Go plan | Go's published limits — $12/5h, $30/wk, $60/mo rolling windows, and free models not counting against them |
 
 Both subscriptions are labelled the same way deliberately. Go's allowance happens to be denominated in dollars where Claude's is not, but that is the unit the window is measured in rather than who is paying — both are plans you have already paid for, with rolling usage windows, and neither bills per token. (Go can overflow into Zen credits once its windows are spent, but that is opt-in from opencode's console, not what a request costs by default.)
 
@@ -280,13 +280,13 @@ Every section takes the same three edits, also listed under `?`:
 | `<C-d>` | Stop it coming back, without deleting anything. On a live chat that closes the buffer and frees its agent; on a pending one it drops out of the reopen set and becomes an ordinary stored session |
 | `<C-x>` | Delete for good — the chat *and* the agent's copy of the conversation. Asks first |
 
-Renaming is local: agents name a session from their own summary of it and ACP has no way to override that, so chosen names are kept in `~/.local/state/nvim/ai/chat_titles.json`, keyed by session ID. That is also what makes a rename stick — the agent pushes a fresh auto-title at the end of every turn, and a name you chose is re-applied over it.
+Renaming is local: agents name a session from their own summary of it and ACP has no way to override that, so chosen names are kept in `~/.local/state/nvim/ducktape/chat_titles.json`, keyed by session ID. That is also what makes a rename stick — the agent pushes a fresh auto-title at the end of every turn, and a name you chose is re-applied over it.
 
 Sessions are cached; the list updates on each open.
 
 **Chats survive restarts:**
 
-Open ACP chats are remembered per directory. On quit, their session IDs are written to `~/.local/state/nvim/ai/chat_sessions.json`; the next time you start nvim in the same directory they wait in `<leader>cl` under **from last session**, and open on demand.
+Open ACP chats are remembered per directory. On quit, their session IDs are written to `~/.local/state/nvim/ducktape/chat_sessions.json`; the next time you start nvim in the same directory they wait in `<leader>cl` under **from last session**, and open on demand.
 
 Nothing is started for you. A restore spawns an agent subprocess and makes a blocking `session/load` round trip, so starting them eagerly meant paying for chats you might never look at — an nvim start now costs zero agent processes no matter how many chats were open when it quit. `<leader>cc` reopens the most recent one when no chat is live, so continuing where you left off is still one keypress; `<leader>cn` is what asks for a fresh chat instead.
 
@@ -301,13 +301,13 @@ Notes:
 - There is no cap. Nothing is spawned until you pick something, so however many chats were open, all of them wait in the list.
 - A pending chat you never open stays pending across as many restarts as you like — quitting does not quietly drop it.
 - A chat you opened but never sent a message in comes back as an empty chat. The agent only commits a session to its own store once there has been a real exchange, so there is no history to reload — but the chat itself reopens on its original provider/model rather than disappearing.
-- If a saved session has since been deleted or aged out of the agent's store, the chat still reopens, just without its transcript, and you get one `[ai] session <id> is gone — reopened without history` warning.
+- If a saved session has since been deleted or aged out of the agent's store, the chat still reopens, just without its transcript, and you get one `[ducktape] session <id> is gone — reopened without history` warning.
 
 **The agent asks before it edits:**
 
 Chat can change files, but not silently — it asks first, and you see a diff of the proposed change before answering. Approve once, approve for the rest of the session, or reject; rejecting leaves the file exactly as it was. Requests queue, so a turn touching several files asks about each in turn.
 
-This is `mode = "default"` for claude and `edit/write/patch/bash = "ask"` for opencode, both set in `ai/providers.lua`. Inline is stricter and unchanged: claude inline forces `dontAsk`, which *denies* mutating tools outright (despite the name), and opencode inline denies them via `OPENCODE_PERMISSION`.
+This is `mode = "default"` for claude and `edit/write/patch/bash = "ask"` for opencode, both set in `ducktape/providers.lua`. Inline is stricter and unchanged: claude inline forces `dontAsk`, which *denies* mutating tools outright (despite the name), and opencode inline denies them via `OPENCODE_PERMISSION`.
 
 To loosen it for one session, use `<leader>cs` and change Mode — `acceptEdits` applies edits without asking, `plan` makes it read-only. Changing the default means editing `providers.lua`.
 
@@ -320,7 +320,7 @@ Buffers now follow those edits automatically. The agent reports each file it tou
 The one case left to you is a genuine conflict: if the buffer has **unsaved changes** and the agent also changed the file, neither version is touched, and you get
 
 ```
-[ai] foo.lua was edited by the agent but has unsaved changes here — :e! to take the agent's version, :w to keep yours
+[ducktape] foo.lua was edited by the agent but has unsaved changes here — :e! to take the agent's version, :w to keep yours
 ```
 
 Picking a winner automatically would throw away one side silently, so it asks instead. This still matters even though the agent asks before editing: you approve the edit, and the reload has to land in a buffer you may meanwhile have typed into.
@@ -334,7 +334,7 @@ That is a change: editing the transcript used to be a trap, where the text chang
 You will see one line when it happens:
 
 ```
-[ai] asking with your edited conversation
+[ducktape] asking with your edited conversation
 ```
 
 Editing on its own does nothing at all — no message, no work, no interruption. It is asking a question with the edit in place that makes it count, which is also when you can rewrite as much as you like while thinking.
@@ -355,7 +355,7 @@ For ollama there is no session to replace. The edited conversation simply goes o
 Two smaller fixes come with this:
 
 - Editing history used to corrupt the *next* message rather than merely being ignored. The line your new prompt is parsed from was fixed when the last reply landed, so deleting two lines of history above it meant your question was skipped entirely, and adding four meant your previous question was sent again with the new one glued onto it. That boundary is now re-read from the buffer on every send
-- Sending with nothing typed says `[ai] nothing to send — type your question under the last header` instead of submitting an empty message, which the API rejects with a 400 in a red box
+- Sending with nothing typed says `[ducktape] nothing to send — type your question under the last header` instead of submitting an empty message, which the API rejects with a 400 in a red box
 
 **Inside the chat buffer:**
 
@@ -544,8 +544,8 @@ The special `#{this}` context resolves to the current buffer in normal mode, or 
 
 Two developer commands for inspecting the connection pool:
 
-- `:AiPoolStatus` — shows a table of live ACP connections: provider, connection id, primary vs overflow, state, age, idle time, busy/idle status, and session id. Also shows queued request depth per provider. Nothing should be spawned at startup — an empty panel confirms lazy loading
-- `:AiDebugSend {provider} {prompt}` — sends a raw prompt through the pool and opens the full reply in a scratch buffer. No parsing, no placement, no buffer mutation. Useful for isolating transport problems from parsing/placement bugs. Works with ACP providers only (claude, opencode)
+- `:Ducktape pool` — shows a table of live ACP connections: provider, connection id, primary vs overflow, state, age, idle time, busy/idle status, and session id. Also shows queued request depth per provider. Nothing should be spawned at startup — an empty panel confirms lazy loading
+- `:Ducktape send {provider} {prompt}` — sends a raw prompt through the pool and opens the full reply in a scratch buffer. No parsing, no placement, no buffer mutation. Useful for isolating transport problems from parsing/placement bugs. Works with ACP providers only (claude, opencode)
 
 ---
 

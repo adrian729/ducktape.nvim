@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: stylua
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # No stylua.toml on purpose: the tree is formatted to stylua's defaults.
+      - uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: latest
+          args: --check lua/ plugin/ tests/
+
+  typecheck:
+    name: lua-language-server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Check
+        run: |
+          set -euo pipefail
+          version=3.13.5
+          curl -fsSL -o luals.tar.gz \
+            "https://github.com/LuaLS/lua-language-server/releases/download/${version}/lua-language-server-${version}-linux-x64.tar.gz"
+          mkdir -p luals && tar -xzf luals.tar.gz -C luals
+          # .luarc.json points its library at $VIMRUNTIME, which only exists inside nvim.
+          VIMRUNTIME=$(nvim --headless --clean -c 'echo $VIMRUNTIME' -c 'qa!' 2>&1 | tr -d '\r')
+          export VIMRUNTIME
+          ./luals/bin/lua-language-server --check "$PWD/lua" \
+            --checklevel=Error --configpath="$PWD/.luarc.json" --logpath="$PWD/luals-log"
+          # --check exits 0 whatever it finds, so the report decides.
+          report="$PWD/luals-log/check.json"
+          if [ -s "$report" ] && [ "$(jq 'length' "$report")" != "0" ]; then
+            cat "$report"
+            exit 1
+          fi
+
+  test:
+    name: nvim ${{ matrix.nvim }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nvim: [v0.11.4, stable, nightly]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.nvim }}
+
+      # Neovim ships neither markdown parser, and the chat-edit suite parses a chat buffer with
+      # the markdown one. They install into stdpath("data")/site/parser, which the test nvim finds
+      # on its default runtimepath.
+      - name: Install Tree-sitter parsers
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --depth=1 \
+            https://github.com/nvim-treesitter/nvim-treesitter "$HOME/nvim-treesitter"
+          nvim --headless --clean --cmd "set rtp+=$HOME/nvim-treesitter" \
+            -c 'lua require("nvim-treesitter").install({ "markdown", "markdown_inline" }):wait(300000)' \
+            -c 'qa!'
+          nvim --headless --clean \
+            -c 'lua for _, l in ipairs({ "markdown", "markdown_inline" }) do assert(pcall(vim.treesitter.language.add, l), l .. " parser missing") end' \
+            -c 'qa!'
+
+      - name: Test
+        run: LC_ALL=C ./tests/run_tests.sh

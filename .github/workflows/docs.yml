@@ -1,0 +1,40 @@
+name: Docs
+
+# doc/ducktape.txt is generated rather than hand-written, and committed so that `:h ducktape`
+# works from a plain checkout. Panvimdoc needs pandoc, so this runs it here instead of asking
+# every contributor to install it — `make doc` is the local equivalent for anyone who has it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - docs/**
+      - scripts/vimdoc.md
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  vimdoc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: kdheepak/panvimdoc@main
+        with:
+          vimdoc: ducktape
+          pandoc: scripts/vimdoc.md
+          version: "NVIM v0.11"
+          titledatepattern: "%Y %B %d"
+          toc: true
+          treesitter: true
+          dedupsubheadings: true
+          ignorerawblocks: true
+          docmapping: false
+
+      - uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "docs: regenerate doc/ducktape.txt"
+          file_pattern: doc/ducktape.txt
