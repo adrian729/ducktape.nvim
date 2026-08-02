@@ -127,6 +127,9 @@ local subcommands = {
 	send = function(args)
 		require("ducktape.debug").send_command(args)
 	end,
+	models = function()
+		require("ducktape.debug").refresh_models()
+	end,
 }
 
 vim.api.nvim_create_user_command("Ducktape", function(cmd)

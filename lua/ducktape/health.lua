@@ -243,6 +243,26 @@ local function check_config()
 		end
 	end
 
+	-- The discovered model lists, because "the picker is empty" and "the picker has not asked yet"
+	-- look identical from the outside.
+	local lists = require("ducktape.model_cache").lists()
+	local at = require("ducktape.model_cache").generated_at()
+	if next(lists) then
+		local parts = {}
+		for key, models in pairs(lists) do
+			table.insert(parts, ("%s %d"):format(key, #models))
+		end
+		table.sort(parts)
+		ok(fmt("models discovered: %s (%s)", table.concat(parts, ", "), at and os.date("%Y-%m-%d %H:%M", at) or "?"))
+	else
+		info(
+			"no models discovered yet — the pickers fill themselves the first time they are opened, or "
+				.. "run :Ducktape models"
+		)
+	end
+	local auto = require("ducktape.providers").resolve_chat_option_value("opencode", "model", "auto")
+	info(fmt("opencode `auto` currently resolves to %s", tostring(auto)))
+
 	local inline = require("ducktape.providers").current("inline")
 	local chat = require("ducktape.providers").current("chat")
 	info(fmt("inline: %s (%s)", inline.provider, vim.inspect(inline.opts, { newline = " ", indent = "" })))

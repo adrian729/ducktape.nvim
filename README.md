@@ -35,7 +35,7 @@ across Claude, OpenCode and Ollama, and inline requests that cannot write to you
   to when you have unsaved changes.
 - **Status and plumbing** — a status panel with live per-session option changes, statusline counters
   for running / waiting / failed inline requests, a pooled ACP connection layer with reuse, overflow
-  and idle teardown, and `:Ducktape pool` / `:Ducktape send` for when something looks wrong.
+  and idle teardown, and `:Ducktape pool` / `:Ducktape send` / `:Ducktape models` for when something looks wrong.
 
 All 17 global keymaps, the buffer-local diff keys and every list and picker are in
 [`docs/keymaps.md`](docs/keymaps.md). The day-to-day guide is
@@ -217,14 +217,41 @@ opts = {
 
   opencode = {
     relay = { cmd = "opencode-llm" },
-    models_json = {
-      "$XDG_CONFIG_HOME/opencode/opencode-models.json",
-      "~/.config/opencode/opencode-models.json",
-      "~/.local/config/opencode-models.json",
+    -- Which free model the `auto` sentinel becomes when a live ACP session has to be pinned to
+    -- something real. Walked in order; the first one this machine actually offers wins. A Go
+    -- entry here is ignored — `auto` never spends the subscription.
+    prefer = {
+      "opencode/deepseek-v4-flash-free",
+      "opencode/mimo-v2.5-free",
+      -- …
     },
   },
 }
 ```
+
+### Model lists discover themselves
+
+Nothing about which models exist is shipped or configured. Each provider is asked — `opencode models`
+for the OpenCode free tier and any Go subscription, ollama's `/api/tags` for each endpoint, the live
+ACP session for Claude's — and the answers are written to
+`stdpath("state")/ducktape/models.json` so the next start has them immediately.
+
+So the first time you open a picker it shows what it has (nothing, on a brand new install) and fills
+a moment later as each provider answers. Every start after that is instant.
+
+The lists never expire, because a stale list beats an empty picker and refreshing is one command:
+
+```vim
+:Ducktape models
+```
+
+That throws the file away, asks everything again, and reports what came back — the only thing that
+picks up an ollama model you just pulled, a subscription that just started, or an
+`opencode auth login`. Note `opencode models` reports what the *authenticated* opencode can reach:
+if `$XDG_DATA_HOME` points somewhere without `opencode/auth.json` in it, you get the ambient free
+tier and no Go models, with exit code 0 and nothing on stderr.
+
+`:checkhealth ducktape` prints what has been discovered, when, and what `auto` currently resolves to.
 
 ### Three providers, not N
 

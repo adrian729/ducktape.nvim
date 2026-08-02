@@ -168,11 +168,22 @@ M.defaults = {
 		-- stdout; exit 1 usage, 2 empty input, 3 missing opencode/jq, 5 no free model, 6 API
 		-- error, 124 timeout. Anything meeting that contract can stand in.
 		relay = { cmd = "opencode-llm" },
-		-- Where the relay's own free-model list lives, checked in this order.
-		models_json = {
-			"$XDG_CONFIG_HOME/opencode/opencode-models.json",
-			"~/.config/opencode/opencode-models.json",
-			"~/.local/config/opencode-models.json",
+
+		-- Which free model the `auto` sentinel becomes when a live ACP session has to be pinned to
+		-- something real. Walked in order; the first one this machine actually offers wins, and any
+		-- free model is used if none of them do.
+		--
+		-- A preference, not a fact, which is why it is configured rather than derived: what a
+		-- machine *can* reach comes from `opencode models`, but that is alphabetical, and letting
+		-- the order decide put `auto` on opencode's own ambient default. Free-tier names change, so
+		-- an entry that no longer exists is skipped rather than being an error.
+		prefer = {
+			"opencode/deepseek-v4-flash-free",
+			"opencode/mimo-v2.5-free",
+			"opencode/laguna-s-2.1-free",
+			"opencode/ling-3.0-flash-free",
+			"opencode/north-mini-code-free",
+			"opencode/nemotron-3-ultra-free",
 		},
 	},
 
@@ -232,7 +243,7 @@ function M.setup(opts)
 	})
 	vim.validate({
 		["opencode.relay.cmd"] = { cfg.opencode.relay.cmd, "string" },
-		["opencode.models_json"] = { cfg.opencode.models_json, "table" },
+		["opencode.prefer"] = { cfg.opencode.prefer, "table" },
 		["statusline.enabled"] = { cfg.statusline.enabled, "boolean" },
 		["keymaps.globals"] = { cfg.keymaps.globals, "boolean" },
 	})

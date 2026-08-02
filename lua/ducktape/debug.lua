@@ -135,7 +135,56 @@ function M.send_command(args)
 	M.send(provider, prompt)
 end
 
--- Nothing to register any more: both entry points are subcommands of `:Ducktape`. Kept as a no-op
+---`:Ducktape models`. Throws away everything known about which models exist and asks every provider
+---again, then says what came back.
+---
+---The only thing that picks up a model added since the lists were last discovered — a newly pulled
+---ollama model, a subscription that started, an `opencode auth login` — since the lists are
+---otherwise read from disk and never expire.
+function M.refresh_models()
+	local providers = require("ducktape.providers")
+	providers.forget_models()
+	ui.say("[ducktape] asking every provider what it can reach…")
+
+	local pending, found = 3, {}
+	local function done(label, models, err)
+		if models then
+			found[label] = #models
+		elseif err then
+			ui.say(("[ducktape] %s: %s"):format(label, err), vim.log.levels.WARN)
+		end
+		pending = pending - 1
+		if pending > 0 then
+			return
+		end
+		local parts = {}
+		for _, label in ipairs({ "opencode", "ollama cloud", "ollama local" }) do
+			if found[label] then
+				table.insert(parts, ("%s %d"):format(label, found[label]))
+			end
+		end
+		if #parts == 0 then
+			return ui.say("[ducktape] no provider answered — nothing was written", vim.log.levels.WARN)
+		end
+		ui.say(
+			("[ducktape] models: %s — written to %s"):format(
+				table.concat(parts, " · "),
+				vim.fn.fnamemodify(require("ducktape.model_cache").path(), ":~")
+			)
+		)
+	end
+
+	providers.opencode_models_async(function(models, err)
+		done("opencode", models, err)
+	end)
+	for _, endpoint in ipairs({ "cloud", "local" }) do
+		providers.ollama_models(endpoint, function(models, err)
+			done("ollama " .. endpoint, models, err)
+		end)
+	end
+end
+
+-- Nothing to register any more: every entry point is a subcommand of `:Ducktape`. Kept as a no-op
 -- so the setup sequence reads the same for every module it initialises.
 function M.setup() end
 

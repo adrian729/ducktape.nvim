@@ -214,6 +214,31 @@ end
 
 local cache = {}
 
+---Seed the session cache from the last run's answers, once.
+---
+---Without this every start began with an empty picker and an `auto` with nothing to resolve
+---against, because both are answered synchronously and every list is discovered asynchronously.
+local seeded = false
+local function seed()
+	if seeded then
+		return
+	end
+	seeded = true
+	for key, models in pairs(require("ducktape.model_cache").lists()) do
+		if cache[key] == nil and type(models) == "table" then
+			cache[key] = models
+		end
+	end
+end
+
+---Remember a list for the rest of the session and for the next one.
+---@param key string
+---@param models string[]
+local function remember(key, models)
+	cache[key] = models
+	require("ducktape.model_cache").write(key, models)
+end
+
 local function ollama_url(endpoint)
 	return endpoint == "local" and "http://localhost:11434" or "https://ollama.com"
 end
@@ -230,6 +255,7 @@ end
 ---@param cb fun(models: string[]|nil, err: string|nil)
 function M.ollama_models(endpoint, cb)
 	local key = "ollama:" .. endpoint
+	seed()
 	if cache[key] then
 		return cb(cache[key])
 	end
@@ -256,7 +282,7 @@ function M.ollama_models(endpoint, cb)
 				return m.name
 			end, json.models)
 			table.sort(names)
-			cache[key] = names
+			remember(key, names)
 			cb(names)
 		end)
 	end)
@@ -331,65 +357,41 @@ function M.model_tier(provider, model, endpoint)
 	return nil -- an unrecognised model: saying nothing beats guessing at what it draws on
 end
 
----The relay's free-tier fallback list, read from the same config `opencode-llm` walks.
----
----This is the floor, not the whole story: it is what can be answered without asking opencode
----anything, so it is what the synchronous callers see until `opencode models` has been run.
----@return string[]
-local function configured_free_models()
-	-- Same locations `opencode-llm` itself checks, in the same order, unless configured otherwise
-	local candidates = vim.tbl_map(vim.fn.expand, require("ducktape.config").get().opencode.models_json)
-	for _, path in ipairs(candidates) do
-		if vim.fn.filereadable(path) == 1 then
-			local ok, content = pcall(vim.fn.readfile, path)
-			local decoded_ok, json = false, nil
-			if ok then
-				decoded_ok, json = pcall(vim.json.decode, table.concat(content, "\n"))
-			end
-			if decoded_ok and type(json) == "table" and type(json.relay) == "table" then
-				return json.relay
-			end
-		end
-	end
-	return {}
-end
-
 ---Every opencode model that can be selected, free tier and Go alike.
 ---
----Synchronous and never blocking: it answers from the cache `M.opencode_models_async` fills,
----and until that has happened from `opencode-models.json`'s relay list. Callers that want the
----Go models to be present have to have asked for them first.
+---Synchronous and never blocking: it answers from the session cache, which is seeded from the last
+---run's persisted answers. On a machine that has never run `opencode models` it is just the `auto`
+---sentinel, and the picker fills a moment later when the query lands.
+---
+---Deliberately silent when there is nothing yet. There is nothing wrong in that state — it is what
+---a first run looks like — and warning about it named a file that only ever existed in one person's
+---dotfiles.
 ---@return string[]
 function M.opencode_models()
+	seed()
 	if cache.opencode then
 		return cache.opencode
 	end
-
-	local models = { M.AUTO }
-	vim.list_extend(models, configured_free_models())
-	if #models == 1 then
-		-- Required here rather than at the top of the file: this module is what every other one
-		-- reads, and it stays free of dependencies of its own.
-		require("ducktape.ui").say(
-			"[ducktape] could not read opencode-models.json — opencode falls back to its ambient model",
-			vim.log.levels.WARN
-		)
-	end
-	return models
+	return { M.AUTO }
 end
 
----Ask opencode itself what this machine can reach, then cache it.
+---Ask opencode itself what this machine can reach, then cache it for this session and the next.
 ---
----`opencode models` is the only source that knows about the Go subscription — the JSON config
----only ever described the free relay walk, which is why Go models were missing from the
----pickers even with a subscription. It takes about half a second, so it is fetched rather than
----waited on, the same way the ollama lists are.
+---`opencode models` is the only source that knows about the Go subscription, and the only one that
+---knows what *this* machine is entitled to — which is the whole reason nothing is shipped as a
+---hardcoded list. It takes about half a second, so it is fetched rather than waited on, the same way
+---the ollama lists are.
 ---
----`ollama-cloud/*` entries are dropped: opencode can reach them, but this config already has
----its own ollama provider for those, and listing them twice under two providers would only
----raise the question of which one to pick.
+---Note it reports what the *authenticated* opencode can reach: with `$XDG_DATA_HOME` pointed
+---somewhere without `opencode/auth.json` it answers with the ambient free tier and no Go models at
+---all, exit code 0 and nothing on stderr. Measured — it looks exactly like not having a subscription.
+---
+---`ollama-cloud/*` entries are dropped: opencode can reach them, but there is an ollama provider
+---for those already, and listing them twice under two providers would only raise the question of
+---which one to pick.
 ---@param cb fun(models: string[], err: string|nil)
 function M.opencode_models_async(cb)
+	seed()
 	if cache.opencode then
 		return cb(cache.opencode)
 	end
@@ -418,15 +420,27 @@ function M.opencode_models_async(cb)
 			if #models == 1 then
 				return cb(M.opencode_models(), "`opencode models` listed no opencode models")
 			end
-			cache.opencode = models
+			remember("opencode", models)
 			cb(models)
 		end)
 	end)
 end
 
 ---Reset the model caches so the next lookup re-queries. Exposed for the status panel.
+---
+---Leaves the persisted lists alone: the status panel clears this to pick up a model added since,
+---not to lose what it already knows if the query fails. `M.forget_models` is the harder reset.
 function M.clear_cache()
 	cache = {}
+	seeded = false
+end
+
+---Throw away everything known about models, on disk included, so the next lookup rediscovers it.
+---Behind `:Ducktape models`.
+function M.forget_models()
+	cache = {}
+	seeded = true -- nothing left to seed from, and re-seeding would read the file we just deleted
+	require("ducktape.model_cache").clear()
 end
 
 --=============================================================================
@@ -472,26 +486,48 @@ function M.resolve_chat_option_value(provider, key, value)
 	if key ~= "model" or value ~= M.AUTO then
 		return value
 	end
-	-- AUTO means "let opencode-llm walk its fallback list", which only has meaning on the
-	-- relay. A live session has to be pinned to something, and leaving it unset lands on
-	-- opencode's ambient default — which is not guaranteed to be a free-tier model.
+	-- AUTO means "walk a fallback list", which only has meaning on the relay. A live session has to
+	-- be pinned to something, and leaving it unset lands on opencode's ambient default — which is
+	-- not guaranteed to be a free-tier model.
 	--
-	-- Searched for rather than taken from a fixed index: the list holds Go models too now, and
-	-- index 2 being free was only ever true because of how the list happened to be sorted. AUTO
-	-- resolving to a Go model would spend subscription budget on a value the user never picked.
+	-- Which free model, though, is a preference and not a fact, so it comes from config rather than
+	-- from the order a list happens to arrive in. That order used to decide it, and the two sources
+	-- disagree: a hand-written fallback list is ordered by preference, while `opencode models` is
+	-- alphabetical. So opening the picker once — which is what fills the cache — silently moved AUTO
+	-- onto whichever free model sorts first, `opencode/big-pickle`, the ambient default this branch
+	-- exists to avoid. Measured, and the reason `prefer` exists.
+	local available = M.opencode_models()
+	local function offered(model)
+		return vim.tbl_contains(available, model)
+	end
+
+	-- `prefer` orders the free tier; it is not a way to opt into the Go one. AUTO is what a user
+	-- picked *instead of* naming a model, so resolving it onto a subscription model would spend
+	-- budget on a value they never chose — pick Go deliberately, per scope, and it is passed through
+	-- untouched above.
 	local resolved
-	for _, model in ipairs(M.opencode_models()) do
-		if M.is_free_opencode_model(model) then
+	for _, model in ipairs(require("ducktape.config").get().opencode.prefer or {}) do
+		if offered(model) and M.is_free_opencode_model(model) then
 			resolved = model
 			break
+		end
+	end
+	-- Nothing preferred is on this machine, so any free model beats the ambient default. Sorted
+	-- order is arbitrary here, but it is arbitrary among models that all cost nothing.
+	if not resolved then
+		for _, model in ipairs(available) do
+			if M.is_free_opencode_model(model) then
+				resolved = model
+				break
+			end
 		end
 	end
 	if not resolved then
 		-- Nothing to pin to, so staying quiet here would land on exactly the default this
 		-- branch exists to avoid. Say so where the user will see it.
 		require("ducktape.ui").say(
-			"[ducktape] no free opencode model is known, so this session falls back to opencode's "
-				.. "own default — check opencode-models.json",
+			"[ducktape] no free opencode model is known yet, so this session falls back to opencode's "
+				.. "own default — :Ducktape models asks opencode what it can reach",
 			vim.log.levels.WARN
 		)
 	end

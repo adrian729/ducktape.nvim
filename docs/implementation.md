@@ -14,11 +14,12 @@ The old integration was deleted entirely before the rebuild started, rather than
 lua/ducktape/
   init.lua            setup: installs the adapters, the send override and the persistence hook
   config.lua          every knob, and the adapter definitions carrying the write defence, as data
+  model_cache.lua     the discovered model lists, persisted so a restart starts full
   keys.lua            the one place that knows what a key is called; every message reads it
   health.lua          :checkhealth ducktape — deps, parsers, CodeCompanion internals, binaries
   providers.lua       single source of truth: providers, options, defaults, selection, model lists
   acp_pool.lua        lazy ACP connections, overflow spawning, idle reaping, safety verification
-  debug.lua           :Ducktape pool and :Ducktape send smoke harness
+  debug.lua           :Ducktape pool / send smoke harness, and :Ducktape models refresh
   inline/
     init.lua          prompt, placement, extmark anchoring, diff, accept/reject, concurrency, cancel
     parse.lua         fence stripping, prose and tool-call-leak detection
@@ -56,13 +57,15 @@ Defaults are free-first by policy:
 - Inline: ollama cloud `gpt-oss:120b` — ~4s, free, no local RAM
 - Chat: claude `opus`, effort `xhigh`, mode `default` — the agent asks before it writes, and CodeCompanion answers with a diff of the proposed change
 
-Model lists resolve dynamically and are cached per nvim session:
+Model lists are discovered by asking each provider, cached for the session, and written to `stdpath("state")/ducktape/models.json` so the next start has them without asking again. `:Ducktape models` throws that file away and re-asks — the only thing that notices a model added since. Nothing is shipped as a hardcoded list, which is what makes the plugin work on a machine that is not its author's:
 - Ollama local: `curl localhost:11434/api/tags`
 - Ollama cloud: `curl https://ollama.com/api/tags` with `OLLAMA_API_KEY`
-- OpenCode: parsed from the same `opencode-models.json` the relay program reads, looked for at `$XDG_CONFIG_HOME/opencode/`, then `~/.config/opencode/`, then `~/.local/config/` — configurable with `opts.opencode.models_json`
+- OpenCode: `opencode models`, which is the only source that knows what this machine is entitled to, Go subscription included. It reports what the *authenticated* opencode can reach, so a redirected `$XDG_DATA_HOME` with no `opencode/auth.json` in it answers with the ambient free tier and no Go models, exit 0 and nothing on stderr
 - Claude: the static list matches what the live ACP session offers; the status panel re-resolves from the connection
 
-The `auto` sentinel for opencode's model means "let opencode-llm walk its free-tier fallback list" — meaningful on the relay, but on an ACP session it resolves to the head of that list so it never lands on opencode's ambient default (currently the paid-tier-adjacent `big-pickle`).
+The `auto` sentinel for opencode's model means "walk a free-tier fallback list" — meaningful on the relay, but an ACP session has to be pinned to something real, or it lands on opencode's own ambient default, which is not guaranteed to be free.
+
+**Which** free model is a preference rather than a fact, so it comes from `opts.opencode.prefer` and not from the order a list happens to arrive in. That order used to decide it, and the two sources disagree: a hand-written fallback list is ordered by preference, `opencode models` is alphabetical. So opening the picker once — which is what fills the cache — silently moved `auto` onto whichever free model sorts first, `opencode/big-pickle`, the ambient default the sentinel exists to avoid. Measured cold vs warm, and the reason `prefer` exists. A Go model listed in `prefer` is ignored: `auto` is what the user picked *instead of* naming a model, so resolving it onto a subscription would spend budget on a value they never chose.
 
 ## Connection pool
 
