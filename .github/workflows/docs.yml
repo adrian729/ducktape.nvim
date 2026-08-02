@@ -22,6 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pandoc will not create the output directory, and an empty doc/ cannot be committed — git
+      # does not track directories, and lazy.nvim runs helptags over <plugin>/doc/**, which is E151
+      # on an empty one. So it is made here and only ever exists with the generated file in it.
+      - run: mkdir -p doc
+
       - uses: kdheepak/panvimdoc@main
         with:
           vimdoc: ducktape
