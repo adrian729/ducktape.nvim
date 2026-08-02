@@ -33,19 +33,27 @@ end
 -- Ordered widest-first; the first tier that measures small enough for the window wins.
 -- `?` survives into every tier because it opens CodeCompanion's own list of every chat
 -- keymap — the footer only has to get you there, not be exhaustive.
-local FOOTER_TIERS = {
-	{
-		keys = { { "<CR>", "send" }, { "q", "stop" }, { "ga", "model" }, { "?", "keys" } },
-		chat = { { "<leader>cr", "rename" }, { "<leader>cd", "delete" } },
-	},
-	{
-		keys = { { "<CR>", "send" }, { "q", "stop" }, { "ga", "model" }, { "?", "keys" } },
-		chat = { { "<leader>cr", "rename" } },
-	},
-	{ keys = { { "<CR>", "send" }, { "q", "stop" }, { "?", "keys" } } },
-	{ keys = { { "<CR>", "send" }, { "?", "keys" } } },
-	{ keys = { { "?", "keys" } } },
-}
+---Built per call rather than held as a constant: the two chat entries name ducktape's own keymaps,
+---which are configurable, and a footer that keeps naming the defaults after a remap is worse than
+---no footer at all. The chat-buffer keys on the left are codecompanion's and are fixed.
+---@return table[]
+local function footer_tiers()
+	local K = require("ducktape.keys").label
+	local cc = { { "<CR>", "send" }, { "q", "stop" }, { "ga", "model" }, { "?", "keys" } }
+	return {
+		{
+			keys = cc,
+			chat = { { K("chat_rename"), "rename" }, { K("chat_delete"), "delete" } },
+		},
+		{
+			keys = cc,
+			chat = { { K("chat_rename"), "rename" } },
+		},
+		{ keys = { { "<CR>", "send" }, { "q", "stop" }, { "?", "keys" } } },
+		{ keys = { { "<CR>", "send" }, { "?", "keys" } } },
+		{ keys = { { "?", "keys" } } },
+	}
+end
 
 ---Statusline string for a chat window of the given width.
 ---
@@ -63,7 +71,7 @@ local function footer_text(width)
 		return table.concat(out, "%#DucktapeFooterDim# · ")
 	end
 
-	for _, tier in ipairs(FOOTER_TIERS) do
+	for _, tier in ipairs(footer_tiers()) do
 		local text = " " .. group(tier.keys)
 		if tier.chat then
 			text = text .. "%#DucktapeFooterDim#   │   " .. group(tier.chat)

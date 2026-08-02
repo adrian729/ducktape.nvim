@@ -505,34 +505,41 @@ end
 -- fits on the picker's borders: Telescope centres a title in a border line and silently
 -- clips whatever is too long for the window, so a legend there is only as complete as the
 -- terminal is wide. Here it is never truncated, and the borders only have to advertise `?`.
-local HELP = {
-	{ header = "Selection" },
-	{ key = "<CR>", desc = "open it — a stored session is restored first" },
-	{ key = "<C-r>", desc = "rename; kept against the session, so it survives reopening" },
-	{ key = "<C-d>", desc = "close a live chat, or drop a pending one — session stays" },
-	{ key = "<C-x>", desc = "delete for good, the agent's own transcript included" },
-	{},
-	{ header = "Chats" },
-	{ key = "<leader>cc", desc = "toggle the last chat, reopening it after a restart" },
-	{ key = "<leader>cn", desc = "new chat on the current provider" },
-	{ key = "<leader>cr", desc = "rename the current chat" },
-	{ key = "<leader>cd", desc = "delete the current chat" },
-	{ key = "<leader>cq", desc = "close every chat" },
-	{ key = "<leader>cl", desc = "this list" },
-	{},
-	{ header = "Markers" },
-	{ key = "▶", key_hl = "DucktapeListCurrent", desc = "the chat you were in" },
-	{ key = "●", key_hl = "DucktapeListReady", desc = "agent up and ready" },
-	{ key = "◌", key_hl = "DucktapeListStarting", desc = "agent still connecting" },
-	{ key = "✕", key_hl = "DucktapeListDead", desc = "agent gone; opening it starts a new one" },
-	{ key = "·", key_hl = "DucktapeListDim", desc = "live chat with no agent yet" },
-	{ key = "○", key_hl = "DucktapeListDim", desc = "not started — costs nothing until opened" },
-	{},
-	{ header = "Navigate" },
-	{ key = "<C-n> <C-p>", desc = "move the selection (j and k in normal mode)" },
-	{ key = "<Esc> q ?", desc = "close this help, keeping the list" },
-	{ key = "<C-c>", desc = "close the list" },
-}
+---The rows are built per call, not held as a constant: several of them name ducktape's own
+---keymaps, which are configurable, and a legend that keeps naming the defaults after a remap is
+---worse than no legend.
+---@return table[]
+local function help_rows()
+	local K = require("ducktape.keys").label
+	return {
+		{ header = "Selection" },
+		{ key = "<CR>", desc = "open it — a stored session is restored first" },
+		{ key = "<C-r>", desc = "rename; kept against the session, so it survives reopening" },
+		{ key = "<C-d>", desc = "close a live chat, or drop a pending one — session stays" },
+		{ key = "<C-x>", desc = "delete for good, the agent's own transcript included" },
+		{},
+		{ header = "Chats" },
+		{ key = K("chat_toggle"), desc = "toggle the last chat, reopening it after a restart" },
+		{ key = K("chat_new"), desc = "new chat on the current provider" },
+		{ key = K("chat_rename"), desc = "rename the current chat" },
+		{ key = K("chat_delete"), desc = "delete the current chat" },
+		{ key = K("chat_close_all"), desc = "close every chat" },
+		{ key = K("chat_list"), desc = "this list" },
+		{},
+		{ header = "Markers" },
+		{ key = "▶", key_hl = "DucktapeListCurrent", desc = "the chat you were in" },
+		{ key = "●", key_hl = "DucktapeListReady", desc = "agent up and ready" },
+		{ key = "◌", key_hl = "DucktapeListStarting", desc = "agent still connecting" },
+		{ key = "✕", key_hl = "DucktapeListDead", desc = "agent gone; opening it starts a new one" },
+		{ key = "·", key_hl = "DucktapeListDim", desc = "live chat with no agent yet" },
+		{ key = "○", key_hl = "DucktapeListDim", desc = "not started — costs nothing until opened" },
+		{},
+		{ header = "Navigate" },
+		{ key = "<C-n> <C-p>", desc = "move the selection (j and k in normal mode)" },
+		{ key = "<Esc> q ?", desc = "close this help, keeping the list" },
+		{ key = "<C-c>", desc = "close the list" },
+	}
+end
 
 local help = nil
 
@@ -553,7 +560,7 @@ local function toggle_help()
 	if help_is_open() then
 		return close_help()
 	end
-	help = ui.help(HELP, { title = " Chat list " })
+	help = ui.help(help_rows(), { title = " Chat list " })
 end
 
 local PROMPT_TITLE = "Chats & Sessions"

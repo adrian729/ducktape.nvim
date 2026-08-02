@@ -28,13 +28,14 @@ local EXIT = {
 ---@param cb { on_done: fun(text: string), on_error: fun(msg: string) }
 ---@return table handle
 function M.send(ctx, cb)
-	if vim.fn.executable("opencode-llm") == 0 then
-		cb.on_error("opencode-llm is not on PATH")
+	local cmd = require("ducktape.config").get().opencode.relay.cmd
+	if vim.fn.executable(cmd) == 0 then
+		cb.on_error(("%s is not on PATH"):format(cmd))
 		return { cancel = function() end }
 	end
 
 	local secs = math.floor((ctx.timeout or 120000) / 1000)
-	local args = { "opencode-llm", "-T", tostring(secs) }
+	local args = { cmd, "-T", tostring(secs) }
 
 	-- `auto` means "walk the fallback list", which is the script's own default, so only pin a
 	-- model when the user picked one. Pinning disables the walk, which is the right trade for

@@ -12,6 +12,14 @@ local parse = require("ducktape.inline.parse")
 local providers = require("ducktape.providers")
 local ui = require("ducktape.ui")
 
+-- Messages here name keys, so they read them from the same table that binds them. Resolved per
+-- call rather than once, so a message is right even if the keymaps were reconfigured after load.
+---@param action string
+---@return string
+local function K(action)
+	return require("ducktape.keys").label(action)
+end
+
 local M = {}
 
 -- Anchors and reject-time region marks. Separate from ducktape.ui's namespace so clearing progress
@@ -225,10 +233,9 @@ local function blocked(bufnr, range)
 	local what = held.instruction and (' ("%s")'):format(ui.ellipsise(held.instruction, 40)) or ""
 	if held.kind == "request" then
 		ui.say(
-			("[ducktape] %s already has an inline request in flight%s — <leader>cx cancels it, <leader>cL lists them all"):format(
-				span(held.s0, held.e0),
-				what
-			),
+			("[ducktape] %s already has an inline request in flight%s — " .. K("cancel") .. " cancels it, " .. K(
+				"inline_list"
+			) .. " lists them all"):format(span(held.s0, held.e0), what),
 			vim.log.levels.WARN
 		)
 	else
@@ -407,18 +414,19 @@ local function bind_diff_keys(bufnr)
 		vim.keymap.set("n", lhs, fn, { buffer = bufnr, desc = desc, nowait = true })
 	end
 
-	on("g2", function()
+	local keys = require("ducktape.keys")
+	on(keys.lhs("diff_accept"), function()
 		M.accept(bufnr)
-	end, "AI: accept the diff under the cursor")
-	on("g3", function()
+	end, keys.desc("diff_accept"))
+	on(keys.lhs("diff_reject"), function()
 		M.reject(bufnr)
-	end, "AI: reject the diff under the cursor")
-	on("<leader>cj", function()
+	end, keys.desc("diff_reject"))
+	on(keys.lhs("diff_next_hunk"), function()
 		M.hunk(bufnr, "next")
-	end, "AI: next hunk in the diff under the cursor")
-	on("<leader>ck", function()
+	end, keys.desc("diff_next_hunk"))
+	on(keys.lhs("diff_prev_hunk"), function()
 		M.hunk(bufnr, "previous")
-	end, "AI: previous hunk in the diff under the cursor")
+	end, keys.desc("diff_prev_hunk"))
 end
 
 -- Defined further down, where `guarded` is in scope, but called from the registry bookkeeping above
@@ -426,8 +434,9 @@ end
 local unlock_undo
 
 local function unbind_diff_keys(bufnr)
-	for _, lhs in ipairs({ "g2", "g3", "<leader>cj", "<leader>ck" }) do
-		pcall(vim.keymap.del, "n", lhs, { buffer = bufnr })
+	local keys = require("ducktape.keys")
+	for _, action in ipairs({ "diff_accept", "diff_reject", "diff_next_hunk", "diff_prev_hunk" }) do
+		pcall(vim.keymap.del, "n", keys.lhs(action), { buffer = bufnr })
 	end
 end
 
@@ -545,9 +554,15 @@ end
 -- would be the first thing cut when the message is fitted to the command line, and the range's own
 -- label is directly above the lines in question — the key to press is what is nowhere else.
 local HELD = {
-	refused = "[ducktape] those lines are held by an inline request — <leader>cx cancels it",
-	reverted = "[ducktape] put those lines back — <leader>cx cancels the inline request holding them",
-	undo = "[ducktape] undo is held off while an inline request runs here — <leader>cx cancels it",
+	refused = function()
+		return "[ducktape] those lines are held by an inline request — " .. K("cancel") .. " cancels it"
+	end,
+	reverted = function()
+		return "[ducktape] put those lines back — " .. K("cancel") .. " cancels the inline request holding them"
+	end,
+	undo = function()
+		return "[ducktape] undo is held off while an inline request runs here — " .. K("cancel") .. " cancels it"
+	end,
 }
 
 ---@param req table
@@ -561,7 +576,7 @@ local function say_protected(req, why)
 	if record then
 		req.warned = now
 	end
-	announce(HELD[why or "refused"], { history = record })
+	announce(HELD[why or "refused"](), { history = record })
 end
 
 -- Undo and redo, and the two ways of walking the tree by hand.
@@ -1121,9 +1136,11 @@ local function show_diff(req, result)
 				text = result.preamble,
 			})
 			return ui.say(
-				("[ducktape] %s returned the selection unchanged, with an explanation — <leader>cL to read it"):format(
-					req.provider
-				),
+				(
+					"[ducktape] %s returned the selection unchanged, with an explanation — "
+					.. K("inline_list")
+					.. " to read it"
+				):format(req.provider),
 				vim.log.levels.WARN
 			)
 		end
@@ -1156,10 +1173,11 @@ local function show_diff(req, result)
 		})
 		drop_marks(bufnr, req.marks)
 		return ui.say(
-			("[ducktape] %s answered, but %s is not on screen — nothing was applied, <leader>cL to retry"):format(
-				req.provider,
-				name
-			),
+			(
+				"[ducktape] %s answered, but %s is not on screen — nothing was applied, "
+				.. K("inline_list")
+				.. " to retry"
+			):format(req.provider, name),
 			vim.log.levels.WARN
 		)
 	end
@@ -1207,7 +1225,15 @@ local function show_diff(req, result)
 		diff_id = diff.id,
 		ft = vim.bo[bufnr].filetype,
 		inline = true,
-		banner = "g2 Accept | g3 Reject | <leader>cj/ck Hunk",
+		-- The previous-hunk key is shown as a bare suffix ("<leader>cj/ck") because the banner sits
+		-- in a window bar with no room to spell both out. Parenthesised: gsub returns a count too,
+		-- and format would take it as a fifth argument.
+		banner = ("%s Accept | %s Reject | %s/%s Hunk"):format(
+			K("diff_accept"),
+			K("diff_reject"),
+			K("diff_next_hunk"),
+			(K("diff_prev_hunk"):gsub("^<[lL]eader>", ""))
+		),
 		-- What lets us own g2/g3, which is what makes concurrent diffs possible at all
 		skip_default_keymaps = true,
 		keymaps = {
@@ -1267,7 +1293,10 @@ local function on_reply(req, reply)
 		text = result.text,
 	})
 	drop_marks(req.bufnr, req.marks)
-	ui.say(("[ducktape] %s %s — <leader>cL to read it"):format(req.provider, result.reason), vim.log.levels.WARN)
+	ui.say(
+		("[ducktape] %s %s — " .. K("inline_list") .. " to read it"):format(req.provider, result.reason),
+		vim.log.levels.WARN
+	)
 end
 
 --=============================================================================
@@ -1378,7 +1407,7 @@ function M.submit(opts)
 			-- the row stays in the list with the range still anchored, and `e` there re-asks.
 			wait_on_user(req, "failed", { title = ("%s — failed"):format(selection.provider), text = msg })
 			drop_marks(bufnr, req.marks)
-			ui.say(("[ducktape] %s — <leader>cL to retry"):format(msg), vim.log.levels.ERROR)
+			ui.say(("[ducktape] %s — " .. K("inline_list") .. " to retry"):format(msg), vim.log.levels.ERROR)
 		end,
 		on_tool = function(name)
 			-- Recorded as well as rendered: the virtual text is only visible where the edit is,
@@ -1409,10 +1438,12 @@ function M.run(deep)
 
 	if deep and not providers.transports[transport].read then
 		return ui.say(
-			("[ducktape] <leader>cI needs a transport that can read the repository. %s uses %s, which cannot — "):format(
-				selection.provider,
-				transport
-			) .. "it works on claude and on opencode. Switch with <leader>cm.",
+			(
+				"[ducktape] "
+				.. K("inline_deep")
+				.. " needs a transport that can read the repository. %s uses %s, which cannot — "
+			):format(selection.provider, transport)
+				.. "it works on claude and on opencode. Switch with <leader>cm.",
 			vim.log.levels.WARN
 		)
 	end
@@ -1500,7 +1531,9 @@ local function settle_all_here(action)
 	end
 	if elsewhere > 0 then
 		return ui.say(
-			("[ducktape] no diffs waiting in this buffer — %d in others, <leader>cL settles those"):format(elsewhere),
+			("[ducktape] no diffs waiting in this buffer — %d in others, " .. K("inline_list") .. " settles those"):format(
+				elsewhere
+			),
 			vim.log.levels.INFO
 		)
 	end
@@ -1594,7 +1627,9 @@ function M.cancel()
 	end
 	if elsewhere > 0 then
 		return ui.say(
-			("[ducktape] nothing in play in this buffer — %d elsewhere, <leader>cL lists them"):format(elsewhere),
+			("[ducktape] nothing in play in this buffer — %d elsewhere, " .. K("inline_list") .. " lists them"):format(
+				elsewhere
+			),
 			vim.log.levels.INFO
 		)
 	end

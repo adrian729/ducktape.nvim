@@ -99,14 +99,42 @@ M.defaults = {
 	},
 }
 
----@type table<string, { provider: string, opts: table<string, table> }>
-local state = vim.deepcopy(M.defaults)
+---@type table<string, { provider: string, opts: table<string, table> }>|nil
+local state
+
+---The live selection, seeded from the defaults on first use.
+---
+---Resolved lazily rather than at chunk level. A keymap can pull this module in before
+---`ducktape.setup` has merged the user's config — the bootstrap contract makes that unlikely, not
+---impossible — and a snapshot taken then would silently ignore whatever they configured.
+---@return table
+local function selection()
+	if not state then
+		state = vim.deepcopy(M.defaults)
+	end
+	return state
+end
+
+---Merge the user's `providers` and `defaults` overrides into the shipped tables.
+---
+---Called once from `ducktape.setup`. Re-seeds the selection so an override to `defaults` lands
+---even if something already read the selection into existence.
+---@param cfg table The resolved ducktape config
+function M.apply(cfg)
+	if cfg.providers and next(cfg.providers) then
+		M.providers = vim.tbl_deep_extend("force", M.providers, cfg.providers)
+	end
+	if cfg.defaults and next(cfg.defaults) then
+		M.defaults = vim.tbl_deep_extend("force", M.defaults, cfg.defaults)
+	end
+	state = vim.deepcopy(M.defaults)
+end
 
 ---The current selection for a scope
 ---@param scope "inline"|"chat"
 ---@return { provider: string, opts: table, spec: table }
 function M.current(scope)
-	local sel = state[scope]
+	local sel = selection()[scope]
 	return { provider = sel.provider, opts = sel.opts[sel.provider], spec = M.providers[sel.provider] }
 end
 
@@ -117,7 +145,7 @@ end
 ---@param provider string
 ---@return table|nil
 function M.opts_for(scope, provider)
-	local sel = state[scope]
+	local sel = selection()[scope]
 	return sel and sel.opts[provider] or nil
 end
 
@@ -127,7 +155,7 @@ function M.set_provider(scope, provider)
 	if not M.providers[provider] then
 		return false, ("unknown provider: %s"):format(provider)
 	end
-	state[scope].provider = provider
+	selection()[scope].provider = provider
 	return true
 end
 
@@ -135,7 +163,7 @@ end
 ---@param key string
 ---@param value string
 function M.set_option(scope, key, value)
-	local sel = state[scope]
+	local sel = selection()[scope]
 	local spec = M.providers[sel.provider]
 	if not spec or not spec.options[key] then
 		return false, ("%s has no option %q"):format(sel.provider, key)
@@ -309,12 +337,8 @@ end
 ---anything, so it is what the synchronous callers see until `opencode models` has been run.
 ---@return string[]
 local function configured_free_models()
-	-- Same locations `opencode-llm` itself checks, in the same order
-	local candidates = {
-		vim.fn.expand("$XDG_CONFIG_HOME/opencode/opencode-models.json"),
-		vim.fn.expand("~/.config/opencode/opencode-models.json"),
-		vim.fn.expand("~/.local/config/opencode-models.json"),
-	}
+	-- Same locations `opencode-llm` itself checks, in the same order, unless configured otherwise
+	local candidates = vim.tbl_map(vim.fn.expand, require("ducktape.config").get().opencode.models_json)
 	for _, path in ipairs(candidates) do
 		if vim.fn.filereadable(path) == 1 then
 			local ok, content = pcall(vim.fn.readfile, path)
