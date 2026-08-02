@@ -620,7 +620,7 @@ local function lock_undo(bufnr)
 				return unlock_undo(bufnr)
 			end
 			say_protected(req, "undo")
-		end, { buffer = bufnr, desc = "ai: held off while an inline request runs" })
+		end, { buffer = bufnr, desc = "ducktape: held off while an inline request runs" })
 	end
 end
 
@@ -1320,10 +1320,11 @@ function M.submit(opts)
 	-- request on a transport that cannot read would otherwise silently run as a shallow one.
 	if opts.deep and not providers.transports[transport].read then
 		ui.say(
-			("[ducktape] %s uses the %s transport, which cannot read the repository — <leader>cm to switch"):format(
-				selection.provider,
-				transport
-			),
+			(
+				"[ducktape] %s uses the %s transport, which cannot read the repository — "
+				.. K("inline_pick")
+				.. " to switch"
+			):format(selection.provider, transport),
 			vim.log.levels.WARN
 		)
 		return nil
@@ -1443,7 +1444,7 @@ function M.run(deep)
 				.. K("inline_deep")
 				.. " needs a transport that can read the repository. %s uses %s, which cannot — "
 			):format(selection.provider, transport)
-				.. "it works on claude and on opencode. Switch with <leader>cm.",
+				.. ("it works on claude and on opencode. Switch with %s."):format(K("inline_pick")),
 			vim.log.levels.WARN
 		)
 	end

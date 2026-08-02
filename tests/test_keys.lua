@@ -123,6 +123,24 @@ ok(not keys.globals_enabled(), "globals are off")
 eq("but a key still has a name to print", keys.lhs("cancel"), "<leader>cx")
 eq("and the diff keys are untouched", keys.lhs("diff_accept"), "g2")
 
+section("the two messages that named a prefix rather than a key")
+-- The originals said "<leader>cm", which is a prefix and not bound to anything: pressing it waits
+-- for a third character. Both now name the picker they mean, and follow a remap like the rest.
+eq(
+	"the deep-transport refusal",
+	("it works on claude and on opencode. Switch with %s."):format(K("inline_pick")),
+	"it works on claude and on opencode. Switch with <leader>cmi."
+)
+eq(
+	"and the ask-again variant",
+	(
+		"[ducktape] ollama uses the http transport, which cannot read the repository — "
+		.. K("inline_pick")
+		.. " to switch"
+	),
+	"[ducktape] ollama uses the http transport, which cannot read the repository — <leader>cmi to switch"
+)
+
 section("the same shorthand through vim.g, which is the route plugin/ reads")
 -- plugin/ducktape.lua asks config.get(), not config.setup(): it runs long before any extension
 -- opts exist. Normalising the shorthand in setup alone let `vim.g.ducktape = { keymaps = false }`
