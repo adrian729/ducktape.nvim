@@ -103,6 +103,13 @@ function M.setup(opts)
 	end
 
 	require("ducktape.providers").apply(cfg)
+	-- Nothing on this machine has ever asked the providers what they can reach, so ask now, in the
+	-- background. Without it the first picker of a fresh install opens with only the `auto` sentinel
+	-- and fills in once the query lands — which works, but makes an install look like it needs a
+	-- setup step it does not have. Only ever on a first run: the answers are persisted.
+	if vim.tbl_isempty(require("ducktape.model_cache").lists()) then
+		require("ducktape.providers").discover_models()
+	end
 	install_adapters(cfg)
 	override_send()
 	if cfg.set_default_adapters then

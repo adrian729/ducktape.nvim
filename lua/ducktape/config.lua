@@ -134,6 +134,7 @@ M.defaults = {
 		inline = { "<leader>ci", mode = { "n", "x" }, desc = "AI: inline prompt (no tools)" },
 		inline_deep = { "<leader>cI", mode = { "n", "x" }, desc = "AI: inline prompt, may read the repo" },
 		inline_pick = { "<leader>cmi", mode = { "n" }, desc = "AI: switch inline backend / model" },
+		models_refresh = { "<leader>cmr", mode = { "n" }, desc = "AI: re-ask every provider for its models" },
 		inline_list = { "<leader>cL", mode = { "n" }, desc = "AI: inline list (in flight + waiting for review)" },
 		inline_accept_all = { "<leader>cA", mode = { "n" }, desc = "AI: accept all inline diffs in this buffer" },
 		inline_ask_again = {

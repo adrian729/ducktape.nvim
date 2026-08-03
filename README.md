@@ -236,13 +236,16 @@ for the OpenCode free tier and any Go subscription, ollama's `/api/tags` for eac
 ACP session for Claude's — and the answers are written to
 `stdpath("state")/ducktape/models.json` so the next start has them immediately.
 
-So the first time you open a picker it shows what it has (nothing, on a brand new install) and fills
-a moment later as each provider answers. Every start after that is instant.
+That discovery runs by itself, in the background, the first time the plugin sets up on a machine
+with no `models.json` yet — so a fresh install has its lists before you ever open a picker, and
+there is no setup step of your own to remember. Every start after that reads the file and asks
+nothing.
 
-The lists never expire, because a stale list beats an empty picker and refreshing is one command:
+The lists never expire, because a stale list beats an empty picker and refreshing is one key:
 
 ```vim
 :Ducktape models
+" or <leader>cmr
 ```
 
 That throws the file away, asks everything again, and reports what came back — the only thing that

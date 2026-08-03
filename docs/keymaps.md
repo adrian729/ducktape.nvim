@@ -21,6 +21,7 @@ touching the config.
 | `<leader>ci` | n, x | Inline prompt — no tools, no repo reads | `<Plug>(DucktapeInline)` |
 | `<leader>cI` | n, x | Inline prompt that may read the repo (ACP providers only) | `<Plug>(DucktapeInlineDeep)` |
 | `<leader>cmi` | n | Switch the inline backend / model | `<Plug>(DucktapeInlinePick)` |
+| `<leader>cmr` | n | Re-ask every provider which models it can reach | `<Plug>(DucktapeModelsRefresh)` |
 | `<leader>cL` | n | Inline list — in flight plus waiting for review | `<Plug>(DucktapeInlineList)` |
 | `<leader>cA` | n | Accept every inline diff in this buffer | `<Plug>(DucktapeInlineAcceptAll)` |
 | `<leader>cR` | n | Ask again about the inline edit under the cursor | `<Plug>(DucktapeInlineAskAgain)` |

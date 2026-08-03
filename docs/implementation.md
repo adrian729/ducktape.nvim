@@ -57,7 +57,7 @@ Defaults are free-first by policy:
 - Inline: ollama cloud `gpt-oss:120b` — ~4s, free, no local RAM
 - Chat: claude `opus`, effort `xhigh`, mode `default` — the agent asks before it writes, and CodeCompanion answers with a diff of the proposed change
 
-Model lists are discovered by asking each provider, cached for the session, and written to `stdpath("state")/ducktape/models.json` so the next start has them without asking again. `:Ducktape models` throws that file away and re-asks — the only thing that notices a model added since. Nothing is shipped as a hardcoded list, which is what makes the plugin work on a machine that is not its author's:
+Model lists are discovered by asking each provider, cached for the session, and written to `stdpath("state")/ducktape/models.json` so the next start has them without asking again. Setup kicks that discovery off itself when the file does not exist yet, so a first run is already populated rather than filling once a picker is opened. `:Ducktape models` (`<leader>cmr`) throws the file away and re-asks — the only thing that notices a model added since. Nothing is shipped as a hardcoded list, which is what makes the plugin work on a machine that is not its author's:
 - Ollama local: `curl localhost:11434/api/tags`
 - Ollama cloud: `curl https://ollama.com/api/tags` with `OLLAMA_API_KEY`
 - OpenCode: `opencode models`, which is the only source that knows what this machine is entitled to, Go subscription included. It reports what the *authenticated* opencode can reach, so a redirected `$XDG_DATA_HOME` with no `opencode/auth.json` in it answers with the ambient free tier and no Go models, exit 0 and nothing on stderr

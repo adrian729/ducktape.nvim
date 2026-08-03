@@ -546,7 +546,7 @@ Three commands for when something looks wrong:
 
 - `:Ducktape pool` — shows a table of live ACP connections: provider, connection id, primary vs overflow, state, age, idle time, busy/idle status, and session id. Also shows queued request depth per provider. Nothing should be spawned at startup — an empty panel confirms lazy loading
 - `:Ducktape send {provider} {prompt}` — sends a raw prompt through the pool and opens the full reply in a scratch buffer. No parsing, no placement, no buffer mutation. Useful for isolating transport problems from parsing/placement bugs. Works with ACP providers only (claude, opencode)
-- `:Ducktape models` — forgets every discovered model list and asks each provider again, then says what came back. The lists are otherwise read from disk and never expire, so this is what picks up an ollama model you just pulled, a subscription that just started, or an `opencode auth login`. If the opencode list comes back without its `opencode-go/…` half, `opencode models` could not see its own auth — check that `$XDG_DATA_HOME` is where `opencode/auth.json` actually lives
+- `:Ducktape models`, or `<leader>cmr` — forgets every discovered model list and asks each provider again, then says what came back. The lists are discovered on the first run and then read from disk and never expired, so this is what picks up an ollama model you just pulled, a subscription that just started, or an `opencode auth login`. If the opencode list comes back without its `opencode-go/…` half, `opencode models` could not see its own auth — check that `$XDG_DATA_HOME` is where `opencode/auth.json` actually lives
 
 ---
 

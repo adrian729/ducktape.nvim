@@ -50,6 +50,9 @@ local actions = {
 	inline_pick = function()
 		require("ducktape.inline").pick()
 	end,
+	models_refresh = function()
+		require("ducktape.debug").refresh_models()
+	end,
 	inline_list = function()
 		require("ducktape.inline.list").toggle()
 	end,

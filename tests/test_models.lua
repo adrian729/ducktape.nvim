@@ -115,6 +115,30 @@ providers.forget_models()
 ok(cache.read() == nil, "the file is gone")
 eq("and the sync list is back to the sentinel", #providers.opencode_models(), 1)
 
+section("discovery asks only for what is not already known")
+-- What setup calls on a first run, and the reason a fresh install needs no setup step of its own.
+-- Counted rather than really spawned: the answers would land asynchronously and overwrite the
+-- deliberately-ordered lists these assertions depend on.
+local spawned, real_system = 0, vim.system
+vim.system = function()
+	spawned = spawned + 1
+end
+
+providers.discover_models() -- nothing known: the state forget_models left above
+ok(spawned > 0, "an empty cache asks, got " .. spawned .. " queries")
+
+for _, key in ipairs({ "opencode", "ollama:cloud", "ollama:local" }) do
+	cache.write(key, { "something" })
+end
+providers.clear_cache() -- a new session: memory empty, all three lists on disk
+spawned = 0
+providers.discover_models()
+-- Asking `opencode models` and two curls on every single start is what persisting them avoids.
+eq("nothing is asked when every list is known", spawned, 0)
+
+vim.system = real_system
+providers.forget_models()
+
 section("a corrupt or foreign cache file is treated as absent")
 local file = cache.path()
 vim.fn.mkdir(vim.fn.fnamemodify(file, ":h"), "p")

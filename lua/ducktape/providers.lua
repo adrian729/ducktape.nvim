@@ -426,6 +426,22 @@ function M.opencode_models_async(cb)
 	end)
 end
 
+---Ask every provider what it can reach, for the side effect of caching the answers.
+---
+---Called from setup on a machine that has never discovered anything, so the first picker is already
+---full instead of filling a moment after it opens. Cheap after that: the lists are read from disk and
+---this is not called again.
+---
+---Silent, including on failure. Nobody has asked for a model list at this point, so an unreachable
+---local ollama is not news; every call site that does ask reports its own errors, and
+---`:Ducktape models` is the loud version of this.
+function M.discover_models()
+	M.opencode_models_async(function() end)
+	for _, endpoint in ipairs({ "cloud", "local" }) do
+		M.ollama_models(endpoint, function() end)
+	end
+end
+
 ---Reset the model caches so the next lookup re-queries. Exposed for the status panel.
 ---
 ---Leaves the persisted lists alone: the status panel clears this to pick up a model added since,
