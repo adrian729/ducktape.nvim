@@ -48,9 +48,12 @@ local function reload(bufnr)
 
 	-- Buffer-local: `checktime` asks "file changed, [O]K / (L)oad File?" unless autoread is
 	-- set, and this should not be a prompt. Kept off the global option so the rest of the
-	-- editor behaves the way the user configured it.
+	-- editor behaves the way the user configured it — and put back after, so the buffer does
+	-- not keep autoread on for the rest of the session.
+	local prev_autoread = vim.bo[bufnr].autoread
 	vim.bo[bufnr].autoread = true
 	pcall(vim.cmd, ("checktime %d"):format(bufnr))
+	vim.bo[bufnr].autoread = prev_autoread
 
 	for win, view in pairs(views) do
 		if api.nvim_win_is_valid(win) then
