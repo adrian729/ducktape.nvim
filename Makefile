@@ -16,6 +16,7 @@ fmt:
 	@stylua lua/ plugin/ tests/
 
 doc: .deps/panvimdoc
+	@mkdir -p doc
 	@pandoc \
 		--metadata="project:ducktape" \
 		--metadata="vimversion:NVIM v0.11" \
