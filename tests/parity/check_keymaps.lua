@@ -35,7 +35,7 @@ end
 if variant == "keymaps_false" or variant == "globals_false" then
 	check(keys.globals_enabled() == false, "globals disabled")
 	check(leader_count() == 0, "no <leader>c* defaults, got " .. leader_count())
-	check(plug_count() == 17, "all 17 <Plug> maps still there, got " .. plug_count())
+	check(plug_count() == 18, "all 18 <Plug> maps still there, got " .. plug_count())
 
 	-- A hand-rolled binding onto a <Plug> map has to work, or `false` costs the user the plugin.
 	vim.keymap.set("n", "<leader>zz", "<Plug>(DucktapeChatToggle)", { remap = true })
@@ -49,16 +49,16 @@ elseif variant == "taken_key" then
 	local rhs = vim.fn.maparg(" ci", "n")
 	check(rhs:find("mine", 1, true) ~= nil, "their <leader>ci survived, got " .. rhs)
 	check(vim.fn.maparg(" ci", "n"):match("Ducktape") == nil, "ducktape did not take it")
-	check(leader_count() == 16, "the other 16 defaults are there, got " .. leader_count())
-	check(plug_count() == 17, "all 17 <Plug> maps there")
+	check(leader_count() == 17, "the other 17 defaults are there, got " .. leader_count())
+	check(plug_count() == 18, "all 18 <Plug> maps there")
 elseif variant == "own_plug" then
 	check(vim.fn.maparg(" zi", "n"):find("DucktapeInline", 1, true) ~= nil, "their own key points at the action")
 	check(vim.fn.maparg(" ci", "n") == "", "ducktape skipped its own <leader>ci default")
-	check(leader_count() == 16, "the other 16 defaults are there, got " .. leader_count())
+	check(leader_count() == 17, "the other 17 defaults are there, got " .. leader_count())
 elseif variant == "default" then
 	check(keys.globals_enabled() == true, "globals enabled")
-	check(leader_count() == 17, "all 17 defaults, got " .. leader_count())
-	check(plug_count() == 17, "all 17 <Plug> maps")
+	check(leader_count() == 18, "all 18 defaults, got " .. leader_count())
+	check(plug_count() == 18, "all 18 <Plug> maps")
 end
 
 print(("keymaps[%s]: %d passed, %d failed"):format(variant, pass, fail))

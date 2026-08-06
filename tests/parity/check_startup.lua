@@ -27,6 +27,7 @@ local expected = {
 	["<leader>ci"] = { "n", "x" },
 	["<leader>cI"] = { "n", "x" },
 	["<leader>cmi"] = { "n" },
+	["<leader>cmr"] = { "n" },
 	["<leader>cL"] = { "n" },
 	["<leader>cA"] = { "n" },
 	["<leader>cR"] = { "n" },
@@ -42,7 +43,7 @@ for lhs, modes in pairs(expected) do
 		check(rhs ~= "" and rhs:match("^<Plug>%(Ducktape"), ("%s in %s -> %s"):format(lhs, mode, rhs))
 	end
 end
-check(n == 17, "17 global keys expected, got " .. n)
+check(n == 18, "18 global keys expected, got " .. n)
 
 local plugs = {
 	"ChatToggle",
@@ -56,6 +57,7 @@ local plugs = {
 	"Inline",
 	"InlineDeep",
 	"InlinePick",
+	"ModelsRefresh",
 	"InlineList",
 	"InlineAcceptAll",
 	"InlineAskAgain",
@@ -71,7 +73,7 @@ for _, name in ipairs(plugs) do
 	local lhs = ("<Plug>(Ducktape%s)"):format(name)
 	check(mapped[lhs] == true, lhs .. " mapped")
 end
-check(#plugs == 17, "17 <Plug> maps expected, got " .. #plugs)
+check(#plugs == 18, "18 <Plug> maps expected, got " .. #plugs)
 
 check(vim.o.statusline:find("ducktape.statusline", 1, true) ~= nil, "statusline segment injected")
 check(vim.o.statusline:find("%{% &ruler ?", 1, true) ~= nil, "nvim's own statusline default kept")
