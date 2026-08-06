@@ -1,5 +1,5 @@
 *ducktape.txt*
-                                 For NVIM v0.11    Last change: 2026 August 07
+                                 For NVIM v0.11    Last change: 2026 August 06
 
 ==============================================================================
 Table of Contents                                 *ducktape-table-of-contents*
@@ -630,7 +630,7 @@ which. Ducktape’s global set is configurable — see |ducktape-configuration|
 at the bottom.
 
 
-GLOBAL � DUCKTAPE ~
+GLOBAL — DUCKTAPE ~
 
 All 18 of them. Each also has a `<Plug>(Ducktape…)` mapping, so you can bind
 your own key without touching the config.
@@ -711,7 +711,7 @@ your own key without touching the config.
   <leader>cs        n                 Status panel      <Plug>(DucktapeStatus)
   ---------------------------------------------------------------------------------------
 
-PENDING INLINE DIFF � DUCKTAPE, BUFFER-LOCAL ~
+PENDING INLINE DIFF — DUCKTAPE, BUFFER-LOCAL ~
 
 Bound when a diff is waiting for review and torn down with it, so they collide
 with nothing the rest of the time. The banner above the diff names them, and
@@ -726,7 +726,7 @@ While the diff is up, codecompanion’s own `{` / `}` hunk maps are deleted
 from the buffer so plain paragraph motion keeps working.
 
 
-INLINE LIST � DUCKTAPE (<LEADER>CL) ~
+INLINE LIST — DUCKTAPE (<LEADER>CL) ~
 
   -----------------------------------------------------------------------
   Key                                 Action
@@ -766,7 +766,7 @@ Row markers: `↻` still running, `◆` an edit to review or a reply to read,
 `✖` failed.
 
 
-CHAT LIST � DUCKTAPE (<LEADER>CL, TELESCOPE) ~
+CHAT LIST — DUCKTAPE (<LEADER>CL, TELESCOPE) ~
 
   Key                 Action
   ------------------- --------------------------------------------------------------
@@ -782,7 +782,7 @@ still connecting, `✕` agent gone (opening it starts a new one), `·` live
 chat with no agent yet, `○` not started — costs nothing until opened.
 
 
-PROVIDER / MODEL PICKER � DUCKTAPE (<LEADER>CMI, <LEADER>CMC) ~
+PROVIDER / MODEL PICKER — DUCKTAPE (<LEADER>CMI, <LEADER>CMC) ~
 
 A float, so the whole selection is confirmed as one change rather than applied
 per keystroke.
@@ -863,7 +863,7 @@ Ducktape adds the winbar (provider · model · title) and the footer that lists
 the keys, shrinking to fit the window width.
 
 
-CODE REVIEW � CODECOMPANION (QUICKFIX WINDOW) ~
+CODE REVIEW — CODECOMPANION (QUICKFIX WINDOW) ~
 
 Codecompanion’s own, listed here because it is easy to reach and easy to
 mistake for ours.
@@ -900,7 +900,7 @@ own, or when the key it wants is already taken. Your mapping wins in both
 cases; the other 17 still appear.
 
 
-KEYS INSIDE DUCKTAPE�S OWN WINDOWS
+KEYS INSIDE DUCKTAPE’S OWN WINDOWS
 
 The four panels — the inline list, the status panel, the model picker’s
 options step, the chat list — and the reply float bind their keys
