@@ -37,7 +37,7 @@ across Claude, OpenCode and Ollama, and inline requests that cannot write to you
   for running / waiting / failed inline requests, a pooled ACP connection layer with reuse, overflow
   and idle teardown, and `:Ducktape pool` / `:Ducktape send` / `:Ducktape models` for when something looks wrong.
 
-All 17 global keymaps, the buffer-local diff keys and every list and picker are in
+All 18 global keymaps, the buffer-local diff keys and every list and picker are in
 [`docs/keymaps.md`](docs/keymaps.md). The day-to-day guide is
 [`docs/how_to_use.md`](docs/how_to_use.md); how it works inside is
 [`docs/implementation.md`](docs/implementation.md). After installing, `:h ducktape`.
@@ -83,7 +83,7 @@ vim.pack.add({
   { src = "https://github.com/nvim-telescope/telescope.nvim" },
   { src = "https://github.com/olimorris/codecompanion.nvim" },
   { src = "https://github.com/adrian729/ducktape.nvim",
-    version = vim.version.range("1.0") },
+    version = vim.version.range("*") },
 })
 
 require("codecompanion").setup({ extensions = { ducktape = { opts = {} } } })
@@ -201,6 +201,7 @@ opts = {
       opts = {
         claude = { model = "opus", effort = "xhigh", fast = "off", mode = "default" },
         opencode = { model = "auto", mode = "build" },
+        ollama = { endpoint = "cloud", model = "gpt-oss:120b", think = "off" },
       },
     },
   },

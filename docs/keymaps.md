@@ -5,7 +5,7 @@ global set is configurable — see [Configuration](#configuration) at the bottom
 
 ## Global — ducktape
 
-All 17 of them. Each also has a `<Plug>(Ducktape…)` mapping, so you can bind your own key without
+All 18 of them. Each also has a `<Plug>(Ducktape…)` mapping, so you can bind your own key without
 touching the config.
 
 | Key | Modes | Action | `<Plug>` name |
@@ -48,11 +48,12 @@ paragraph motion keeps working.
 | Key | Action |
 |---|---|
 | `<CR>` | Go to the edit, or read a reply that came to nothing |
-| `a` | Accept — a diff is applied, a reply goes into a chat |
+| `a` / `g2` | Accept — a diff is applied, a reply goes into a chat |
 | `r` | Ask again, with your instruction pre-filled to reword |
-| `x` | Get rid of it: reject, cancel or dismiss, whichever it is |
+| `x` / `g3` | Get rid of it: reject, cancel or dismiss, whichever it is |
 | `A` | Accept every diff — replies waiting on you are left alone |
 | `X` | Done with all of it: cancel, reject and dismiss |
+| `R` | Say out loud that there is no ask-again-for-everything (`r` is one row at a time) |
 | `j` / `k` | Move the selection (arrows work too) |
 | `?` | Help overlay; `?`, `<Esc>` or `q` closes it again |
 | `q` / `<Esc>` | Close the list, once the help is down |
@@ -82,7 +83,7 @@ A float, so the whole selection is confirmed as one change rather than applied p
 | Key | Action |
 |---|---|
 | `j` / `k` / `<Down>` / `<Up>` | Move between options |
-| `l` / `h` / `<Tab>` / `<S-Tab>` | Cycle the selected option's value |
+| `l` / `h` / `<Left>` / `<Right>` / `<Tab>` / `<S-Tab>` | Cycle the selected option's value |
 | `<CR>` | Confirm |
 | `q` / `<Esc>` | Discard |
 
@@ -153,4 +154,4 @@ The `<Plug>` maps and the buffer-local diff keys are unaffected either way, and 
 names a key still names the right one.
 
 A default is skipped when you have already bound that action to a key of your own, or when the key
-it wants is already taken. Your mapping wins in both cases; the other 16 still appear.
+it wants is already taken. Your mapping wins in both cases; the other 17 still appear.
