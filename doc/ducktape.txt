@@ -1,5 +1,5 @@
 *ducktape.txt*
-                                 For NVIM v0.11    Last change: 2026 August 06
+                                 For NVIM v0.11    Last change: 2026 August 07
 
 ==============================================================================
 Table of Contents                                 *ducktape-table-of-contents*
@@ -451,7 +451,39 @@ ADDING A PROVIDER ~
 `providers` is a registry, not a fixed set. Every surface — the pickers, the
 status panel, the chat list, model discovery, health — walks it, so a fourth
 provider needs no edit to the plugin. Codecompanion ships 13 ACP adapters and
-18 HTTP ones; ducktape wires three of them by default.
+18 HTTP ones; ducktape wires three of them by default. Adding one is four
+steps.
+
+1. **Find the adapter.** A provider spec has two halves: `providers.<name>` is
+ducktape’s — the options, the model lists, the write guard — while
+`adapter`, or each endpoint’s `extends`, names a codecompanion adapter, which
+is where the connection to the LLM or agent is actually built. An ACP name
+resolves against the ACP adapters codecompanion ships — `claude_code`,
+`opencode`, `gemini_cli` and the rest — and an HTTP `extends` builds on its
+HTTP ones through `require("codecompanion.adapters").extend`. If the one you
+need is not among them, define it yourself under `adapters` — ducktape passes
+`opts.adapters` through to `codecompanion.setup()`, so the same table works in
+either — following `:help codecompanion-extending-adapters` for the shape, or
+reusing one from codecompanion’s built-in adapters
+<https://github.com/olimorris/codecompanion.nvim/tree/main/lua/codecompanion/adapters>.
+
+
+2. **Write the registry entry.** One entry under `opts.providers.<name>`. Only the
+`label` and the adapter name (or an `endpoints` table, for HTTP) are yours to
+provide — everything else has a default:
+
+
+3. **Pick it as the default, or leave it discoverable.** `defaults = { chat = {
+provider = "gemini" } }` (the last line in the entry below) preselects the
+provider. Without a default, the entry still appears under its label in the
+model pickers, and `<leader>cmi` / `<leader>cmc` switch to it live.
+
+
+4. **Check it.** `:checkhealth ducktape` walks the registry and reports the new
+provider, the adapter behind it, its model list and the guard it resolved;
+`:Ducktape models` (`<leader>cmr`) asks it for its models on demand.
+
+
 
 >lua
     opts = {
