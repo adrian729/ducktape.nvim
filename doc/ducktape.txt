@@ -1,5 +1,5 @@
 *ducktape.txt*
-                                 For NVIM v0.11    Last change: 2026 August 03
+                                 For NVIM v0.11    Last change: 2026 August 06
 
 ==============================================================================
 Table of Contents                                 *ducktape-table-of-contents*
@@ -60,7 +60,7 @@ WHAT IT DOES                             *ducktape-ducktape.nvim-what-it-does*
     for running / waiting / failed inline requests, a pooled ACP connection layer with reuse, overflow
     and idle teardown, and `:Ducktape pool` / `:Ducktape send` / `:Ducktape models` for when something looks wrong.
 
-All 17 global keymaps, the buffer-local diff keys and every list and picker are
+All 18 global keymaps, the buffer-local diff keys and every list and picker are
 in `docs/keymaps.md` <docs/keymaps.md>. The day-to-day guide is
 `docs/how_to_use.md` <docs/how_to_use.md>; how it works inside is
 `docs/implementation.md` <docs/implementation.md>. After installing,
@@ -113,7 +113,7 @@ VIM.PACK (NEOVIM 0.12+) ~
       { src = "https://github.com/nvim-telescope/telescope.nvim" },
       { src = "https://github.com/olimorris/codecompanion.nvim" },
       { src = "https://github.com/adrian729/ducktape.nvim",
-        version = vim.version.range("1.0") },
+        version = vim.version.range("*") },
     })
     
     require("codecompanion").setup({ extensions = { ducktape = { opts = {} } } })
@@ -288,6 +288,7 @@ EXTENSION OPTS ~
           opts = {
             claude = { model = "opus", effort = "xhigh", fast = "off", mode = "default" },
             opencode = { model = "auto", mode = "build" },
+            ollama = { endpoint = "cloud", model = "gpt-oss:120b", think = "off" },
           },
         },
       },
@@ -416,7 +417,7 @@ at the bottom.
 
 GLOBAL — DUCKTAPE ~
 
-All 17 of them. Each also has a `<Plug>(Ducktape…)` mapping, so you can bind
+All 18 of them. Each also has a `<Plug>(Ducktape…)` mapping, so you can bind
 your own key without touching the config.
 
   ---------------------------------------------------------------------------------------
@@ -512,17 +513,40 @@ from the buffer so plain paragraph motion keeps working.
 
 INLINE LIST — DUCKTAPE (<LEADER>CL) ~
 
-  Key         Action
-  ----------- -----------------------------------------------------------
-  <CR>        Go to the edit, or read a reply that came to nothing
-  a           Accept — a diff is applied, a reply goes into a chat
-  r           Ask again, with your instruction pre-filled to reword
-  x           Get rid of it: reject, cancel or dismiss, whichever it is
-  A           Accept every diff — replies waiting on you are left alone
-  X           Done with all of it: cancel, reject and dismiss
-  j / k       Move the selection (arrows work too)
-  ?           Help overlay; ?, <Esc> or q closes it again
-  q / <Esc>   Close the list, once the help is down
+  -----------------------------------------------------------------------
+  Key                                 Action
+  ----------------------------------- -----------------------------------
+  <CR>                                Go to the edit, or read a reply
+                                      that came to nothing
+
+  a / g2                              Accept — a diff is applied, a reply
+                                      goes into a chat
+
+  r                                   Ask again, with your instruction
+                                      pre-filled to reword
+
+  x / g3                              Get rid of it: reject, cancel or
+                                      dismiss, whichever it is
+
+  A                                   Accept every diff — replies waiting
+                                      on you are left alone
+
+  X                                   Done with all of it: cancel, reject
+                                      and dismiss
+
+  R                                   Say out loud that there is no
+                                      ask-again-for-everything (r is one
+                                      row at a time)
+
+  j / k                               Move the selection (arrows work
+                                      too)
+
+  ?                                   Help overlay; ?, <Esc> or q closes
+                                      it again
+
+  q / <Esc>                           Close the list, once the help is
+                                      down
+  -----------------------------------------------------------------------
 Row markers: `↻` still running, `◆` an edit to review or a reply to read,
 `✖` failed.
 
@@ -548,12 +572,18 @@ PROVIDER / MODEL PICKER — DUCKTAPE (<LEADER>CMI, <LEADER>CMC) ~
 A float, so the whole selection is confirmed as one change rather than applied
 per keystroke.
 
-  Key                       Action
-  ------------------------- -----------------------------------
-  j / k / <Down> / <Up>     Move between options
-  l / h / <Tab> / <S-Tab>   Cycle the selected option’s value
-  <CR>                      Confirm
-  q / <Esc>                 Discard
+  -----------------------------------------------------------------------
+  Key                                 Action
+  ----------------------------------- -----------------------------------
+  j / k / <Down> / <Up>               Move between options
+
+  l / h / <Left> / <Right> / <Tab> /  Cycle the selected option’s value
+  <S-Tab>                             
+
+  <CR>                                Confirm
+
+  q / <Esc>                           Discard
+  -----------------------------------------------------------------------
 Leaving the window counts as discarding.
 
 
@@ -652,7 +682,7 @@ one.
 
 A default is skipped when you have already bound that action to a key of your
 own, or when the key it wants is already taken. Your mapping wins in both
-cases; the other 16 still appear.
+cases; the other 17 still appear.
 
 
 ==============================================================================
