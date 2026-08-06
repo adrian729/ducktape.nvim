@@ -20,6 +20,16 @@ local M = {}
 ---@field fenced boolean Whether the code came out of a fenced block
 ---@field preamble string|nil Prose that sat outside the fenced block, if any
 
+-- Every list below is *shipped* and every one is extensible through `opts.inline.parse`, which adds
+-- to it rather than replacing it. Two reasons this needs to be configurable at all:
+--
+--   * the refusal and lead-in patterns are English, and a model answering in another language would
+--     have its refusal applied to the buffer as if it were code;
+--   * refusal phrasing is per-model-family, so a provider added later can read differently from
+--     either of the two these were measured against.
+--
+-- `parse.replace = true` uses only what is configured, for anyone who wants the shipped set gone.
+
 -- A failed tool attempt that nothing parsed, leaking into the message as text. Measured on
 -- opencode under a deny-everything permission set; the markup is unfenced.
 local LEAK_PATTERNS = { "<tool_call>", "</tool_call>", "<function=", "<parameter=" }
@@ -27,20 +37,20 @@ local LEAK_PATTERNS = { "<tool_call>", "</tool_call>", "<function=", "<parameter
 -- Filetypes whose content *is* prose. Judging a reply here by "does it look like code" rejects
 -- every correct answer, because the correct answer is a sentence.
 local PROSE_FILETYPES = {
-	[""] = true,
-	markdown = true,
-	md = true,
-	text = true,
-	txt = true,
-	rst = true,
-	org = true,
-	asciidoc = true,
-	tex = true,
-	plaintex = true,
-	gitcommit = true,
-	mail = true,
-	help = true,
-	norg = true,
+	"",
+	"markdown",
+	"md",
+	"text",
+	"txt",
+	"rst",
+	"org",
+	"asciidoc",
+	"tex",
+	"plaintex",
+	"gitcommit",
+	"mail",
+	"help",
+	"norg",
 }
 
 -- Comment markers. A line starting with one is source, however sentence-like the rest of it is.
@@ -88,6 +98,48 @@ local LEAD_INS = {
 	"^updated%f[%A]",
 	"^done%f[%A]",
 }
+
+-- The shipped lists, by the config key that extends each.
+local SHIPPED = {
+	refusal_openers = REFUSAL_OPENERS,
+	lead_ins = LEAD_INS,
+	prose_filetypes = PROSE_FILETYPES,
+	comment_prefixes = COMMENT_PREFIXES,
+	leak_patterns = LEAK_PATTERNS,
+}
+
+---One of the heuristic lists, with the user's own entries added.
+---
+---Additive by default: the shipped values are measured, and losing one is a regression nobody would
+---notice until an edit silently did not happen. `parse.replace = true` opts out of that.
+---
+---Not cached. These are consulted a handful of times per reply, config can change mid-session, and a
+---latched copy is how the shipped-versus-configured distinction would go stale.
+---@param key string
+---@return string[]
+local function list(key)
+	local ok, cfg = pcall(function()
+		return require("ducktape.config").get().inline.parse
+	end)
+	local configured = (ok and type(cfg) == "table" and cfg[key]) or {}
+	if ok and type(cfg) == "table" and cfg.replace then
+		return configured
+	end
+	if #configured == 0 then
+		return SHIPPED[key]
+	end
+	-- The user's entries first, so a more specific pattern of theirs is tried before a shipped one
+	-- that might match more loosely.
+	local out = vim.list_extend({}, configured)
+	return vim.list_extend(out, SHIPPED[key])
+end
+
+---Is this filetype one whose content is prose?
+---@param filetype string|nil
+---@return boolean
+local function is_prose_filetype(filetype)
+	return vim.tbl_contains(list("prose_filetypes"), filetype or "")
+end
 
 ---Split a reply into lines, dropping the empty element a trailing newline leaves behind.
 ---
@@ -147,7 +199,7 @@ end
 ---@return string|nil marker
 local function find_leak(lines)
 	local joined = table.concat(lines, "\n")
-	for _, pattern in ipairs(LEAK_PATTERNS) do
+	for _, pattern in ipairs(list("leak_patterns")) do
 		if joined:find(pattern, 1, true) then
 			return pattern
 		end
@@ -193,7 +245,7 @@ local function is_codey(line)
 	if trimmed:find("[{}%[%]();=<>|\\`]") or trimmed:find("::") then
 		return true
 	end
-	for _, prefix in ipairs(COMMENT_PREFIXES) do
+	for _, prefix in ipairs(list("comment_prefixes")) do
 		if trimmed:sub(1, #prefix) == prefix then
 			return true
 		end
@@ -297,7 +349,7 @@ local function meaningful_preamble(outside)
 	local kept = {}
 	for _, line in ipairs(outside) do
 		local trimmed = vim.trim(line)
-		if trimmed ~= "" and not matches_any(trimmed:lower(), LEAD_INS) then
+		if trimmed ~= "" and not matches_any(trimmed:lower(), list("lead_ins")) then
 			table.insert(kept, trimmed)
 		end
 	end
@@ -351,7 +403,7 @@ function M.parse(reply, ctx)
 
 	-- An explicit refusal, in any filetype. Unambiguous enough to act on by itself, and it does
 	-- not require full sentences — a declining model does not always punctuate.
-	if plain and matches_any(first, REFUSAL_OPENERS) then
+	if plain and matches_any(first, list("refusal_openers")) then
 		return { kind = "prose", text = reply, reason = "the reply declines to make the edit", fenced = false }
 	end
 
@@ -360,7 +412,7 @@ function M.parse(reply, ctx)
 	if
 		plain
 		and all_sentences(lines)
-		and not PROSE_FILETYPES[ctx.filetype or ""]
+		and not is_prose_filetype(ctx.filetype)
 		and not shares_a_line(lines, ctx.selection)
 	then
 		return {

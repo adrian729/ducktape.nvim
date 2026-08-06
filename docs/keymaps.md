@@ -155,3 +155,44 @@ names a key still names the right one.
 
 A default is skipped when you have already bound that action to a key of your own, or when the key
 it wants is already taken. Your mapping wins in both cases; the other 17 still appear.
+
+### Keys inside ducktape's own windows
+
+The four panels — the inline list, the status panel, the model picker's options step, the chat list —
+and the reply float bind their keys buffer-locally, so they exist only while the window is up and
+cannot collide with anything you have mapped the rest of the time. `:h lua-plugin-keymaps` calls
+these uncontroversial, and they are, but `a`, `r` and `x` sit on strong muscle memory — so they are
+configurable too, under `keymaps.panels`:
+
+```lua
+vim.g.ducktape = {
+  keymaps = {
+    panels = {
+      inline_list = {
+        accept = { "<C-y>", "g2" },   -- replaces the shipped { "a", "g2" }
+        discard = { "<C-n>" },
+      },
+      status = { next_value = { "<Tab>" } },
+    },
+  },
+}
+```
+
+Each entry is a list of keys, all of them bound to that action. Naming one action leaves every other
+action in that panel on its default. Everything that *mentions* a key — the inline list's border
+footer, its `?` overlay, the status panel's footer, the chat list's help — is built from these
+bindings, so a remap carries into the help rather than leaving it lying.
+
+| Panel | Actions |
+|---|---|
+| `inline_list` | `down` `up` `accept` `retry` `discard` `open` `help` `close` |
+| `status` | `down` `up` `next_value` `prev_value` `edit` `close` |
+| `picker` | `down` `up` `next_value` `prev_value` `apply` `discard` |
+| `chat_list` | `help` `close` `delete` `rename` `kill` |
+| `message` | `close` `confirm` |
+
+In the inline list, the "all of them" keys are derived from the single-row ones by upper-casing them,
+so remapping `accept` to `y` moves accept-everything to `Y` rather than stranding it on `A`.
+
+The chat list runs inside whichever picker backend is in use, so its actions are bound in both insert
+and normal mode. The other panels are plain floats and normal-mode only.

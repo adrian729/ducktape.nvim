@@ -8,14 +8,8 @@
 
 local M = {}
 
--- Ordered, because the segment reads left to right in the order things happen: sent, answered,
--- waiting on a decision, gave up.
-local PARTS = {
-	{ key = "running", icon = "↻", hl = "DucktapeListStarting" },
-	{ key = "answered", icon = "◆", hl = "DucktapeListReady" },
-	{ key = "review", icon = "◆", hl = "DucktapeListCurrent" },
-	{ key = "failed", icon = "✖", hl = "DucktapeListDead" },
-}
+-- The icons, their order and the leading label come from `opts.statusline`, so the segment can be
+-- made to match a nerd-font set or dropped to plain letters. Read at redraw, inside the pcall below.
 
 ---The `%{%...%}` expression nvim evaluates on every redraw, for every window.
 ---
@@ -37,12 +31,19 @@ function M.render()
 			return ""
 		end
 
-		local segments = { "%#DucktapeListDim#AI%*" }
-		for _, part in ipairs(PARTS) do
+		local cfg = require("ducktape.config").get().statusline
+		local segments = {}
+		if cfg.label and cfg.label ~= "" then
+			table.insert(segments, ("%%#DucktapeListDim#%s%%*"):format(cfg.label))
+		end
+		for _, part in ipairs(cfg.icons or {}) do
 			local n = counts[part.key]
-			if n > 0 then
+			if n and n > 0 then
 				table.insert(segments, ("%%#%s#%d%s%%*"):format(part.hl, n, part.icon))
 			end
+		end
+		if #segments == 0 then
+			return ""
 		end
 		return " " .. table.concat(segments, " ") .. " "
 	end)
@@ -50,6 +51,23 @@ function M.render()
 end
 
 ---What the counts mean, for `<leader>cL`'s footer and the docs to stay honest about.
-M.legend = " ↻ running · ◆ answered or waiting on you · ✖ failed "
+---
+---Built from the configured icons rather than written out, so a customised segment does not get a
+---legend explaining symbols it no longer uses.
+---@return string
+function M.legend()
+	local ok, out = pcall(function()
+		local icons = {}
+		for _, part in ipairs(require("ducktape.config").get().statusline.icons or {}) do
+			icons[part.key] = part.icon
+		end
+		return (" %s running · %s answered or waiting on you · %s failed "):format(
+			icons.running or "↻",
+			icons.answered or "◆",
+			icons.failed or "✖"
+		)
+	end)
+	return ok and out or " ↻ running · ◆ answered or waiting on you · ✖ failed "
+end
 
 return M

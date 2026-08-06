@@ -1,11 +1,12 @@
--- Chat list: Telescope picker with live chats and resumable sessions, including
--- sessions started outside nvim. Filtered by git root so sessions don't vanish
--- when nvim is opened in a subdirectory.
+-- Chat list: a picker over live chats and resumable sessions, including sessions started outside
+-- nvim. Scoped to the project so sessions don't vanish when nvim is opened in a subdirectory; what
+-- counts as the project is `ducktape.scope`, and configurable.
 
 local M = {}
 
 local api = vim.api
 local ui = require("ducktape.ui")
+local scope = require("ducktape.scope")
 
 -- List colours come from ducktape.ui, which owns the palette for every ducktape surface. Scheduled
 -- because resolving it before catppuccin has loaded would latch the stand-in colours in.
@@ -18,27 +19,6 @@ end
 --=============================================================================
 -- Helpers
 --=============================================================================
-
----The git root of the current working directory, cached per nvim session.
----@return string|nil
-local function git_root()
-	if M._git_root ~= nil then
-		return M._git_root
-	end
-	local handle = io.popen("git rev-parse --show-toplevel 2>/dev/null")
-	if not handle then
-		M._git_root = false
-		return nil
-	end
-	local result = handle:read("*a")
-	handle:close()
-	if result and result ~= "" then
-		M._git_root = vim.trim(result)
-	else
-		M._git_root = false
-	end
-	return M._git_root ~= false and M._git_root or nil
-end
 
 ---A relative timestamp like "(2m ago)".
 ---@param iso string ISO-8601 timestamp
@@ -97,14 +77,12 @@ local function session_connection(opts)
 		local chat = require("codecompanion.interactions.chat").buf_get_chat(bufnr)
 		local conn = chat and chat.acp_connection
 		if conn and conn:is_ready() and conn.session_id then
-			local name = chat.adapter and chat.adapter.name
-			if name == "claude_code" or name == "opencode" then
-				-- Report the ducktape.providers key rather than the CodeCompanion adapter
-				-- name — callers feed it back into provider-keyed lookups.
-				local key = chat._ducktape_provider or (name == "claude_code" and "claude" or "opencode")
-				if not opts.provider or opts.provider == key then
-					return conn, key
-				end
+			-- Report the ducktape.providers key rather than the CodeCompanion adapter name —
+			-- callers feed it back into provider-keyed lookups.
+			local key = chat._ducktape_provider
+				or require("ducktape.providers").provider_for_adapter(chat.adapter and chat.adapter.name)
+			if key and (not opts.provider or opts.provider == key) then
+				return conn, key
 			end
 		end
 	end
@@ -113,8 +91,15 @@ local function session_connection(opts)
 	local adapters = require("codecompanion.adapters")
 	local ACP = require("codecompanion.acp")
 
-	-- The requested agent, or claude first and opencode second when it makes no difference
-	for _, provider in ipairs(opts.provider and { opts.provider } or { "claude", "opencode" }) do
+	-- The requested agent, or every provider that can hold a session, in registry order when it
+	-- makes no difference. Derived rather than listed: a provider added through config can resume
+	-- its own sessions, and a hardcoded pair could not see it.
+	local candidates = opts.provider and { opts.provider }
+		or providers.names(function(_, name)
+			return providers.resumable(name)
+		end)
+
+	for _, provider in ipairs(candidates) do
 		local name = providers.acp_adapter(provider)
 		if name then
 			local adapter = adapters.resolve(name)
@@ -135,14 +120,14 @@ local function session_connection(opts)
 	return nil, nil
 end
 
----Fetch and cache resumable sessions, filtered by git root.
+---Fetch and cache resumable sessions, filtered to the current project.
 ---@return { sessionId: string, title: string, updatedAt: string, cwd: string, provider: string }[]
 local function resumable_sessions()
 	if M._cached_sessions then
 		return M._cached_sessions
 	end
 
-	local root = git_root()
+	local root = scope.root()
 	if not root then
 		return {}
 	end
@@ -158,7 +143,9 @@ local function resumable_sessions()
 	local renamed = require("ducktape.chat").saved_titles()
 	local filtered = {}
 	for _, s in ipairs(raw) do
-		if s.cwd and vim.startswith(s.cwd, root) then
+		-- `scope.contains` resolves both sides, so a symlinked checkout on one and the agent's own
+		-- resolved path on the other still match. A plain prefix compare filtered them all out.
+		if scope.contains(s.cwd) then
 			table.insert(filtered, {
 				sessionId = s.sessionId,
 				title = renamed[s.sessionId] or s.title or s.sessionId,
@@ -303,18 +290,13 @@ local function picker(opts)
 			{ note, "DucktapeListDim" },
 		})
 
-		-- Bind per-iteration: the closure below captures the current
-		-- iteration's text/highlights, not the loop variable's final value.
-		local make_display = function()
-			return text, highlights
-		end
-
 		-- The leading digit is what keeps the current chat on top, and live chats above
 		-- stored sessions, once a filter is typed and the sorter starts ranking.
 		local entry = {
 			value = chat,
 			ordinal = (is_current and "0" or "1") .. chat.title,
-			display = make_display,
+			text = text,
+			highlights = highlights,
 			kind = "live",
 		}
 		-- With an empty prompt every entry scores the same, so the sorter leaves them in
@@ -356,9 +338,8 @@ local function picker(opts)
 			table.insert(entries, {
 				value = entry,
 				ordinal = "2" .. (title or ""),
-				display = function()
-					return text, highlights
-				end,
+				text = text,
+				highlights = highlights,
 				kind = "pending",
 			})
 		end
@@ -376,9 +357,8 @@ local function picker(opts)
 			table.insert(entries, {
 				value = s,
 				ordinal = "3" .. s.title .. (s.updatedAt or ""),
-				display = function()
-					return text, highlights
-				end,
+				text = text,
+				highlights = highlights,
 				kind = "session",
 			})
 		end
@@ -510,13 +490,17 @@ end
 ---worse than no legend.
 ---@return table[]
 local function help_rows()
-	local K = require("ducktape.keys").label
+	local keys = require("ducktape.keys")
+	local K = keys.label
+	local P = function(action)
+		return keys.panel_label("chat_list", action)
+	end
 	return {
 		{ header = "Selection" },
 		{ key = "<CR>", desc = "open it — a stored session is restored first" },
-		{ key = "<C-r>", desc = "rename; kept against the session, so it survives reopening" },
-		{ key = "<C-d>", desc = "close a live chat, or drop a pending one — session stays" },
-		{ key = "<C-x>", desc = "delete for good, the agent's own transcript included" },
+		{ key = P("rename"), desc = "rename; kept against the session, so it survives reopening" },
+		{ key = P("delete"), desc = "close a live chat, or drop a pending one — session stays" },
+		{ key = P("kill"), desc = "delete for good, the agent's own transcript included" },
 		{},
 		{ header = "Chats" },
 		{ key = K("chat_toggle"), desc = "toggle the last chat, reopening it after a restart" },
@@ -563,76 +547,131 @@ local function toggle_help()
 	help = ui.help(help_rows(), { title = " Chat list " })
 end
 
-local PROMPT_TITLE = "Chats & Sessions"
-
----Open the Telescope picker.
+---Open the chat list.
+---
+---Goes through ducktape.picker, so telescope is no longer required for it: with telescope installed
+---this is a telescope picker, and without it a built-in float. Everything below is written against
+---that interface rather than against either backend.
 function M.open()
-	local ok, _ = pcall(require, "telescope")
-	if not ok then
-		return ui.say("[ducktape] telescope is required for the chat list", vim.log.levels.ERROR)
-	end
-
 	ensure_highlights()
 
-	-- Resolved now, before Telescope's prompt buffer becomes the current one: the answer
-	-- follows BufEnter, so asking again during a rebuild would give the prompt, not a chat.
+	-- Resolved now, before a prompt buffer becomes the current one: the answer follows BufEnter, so
+	-- asking again during a rebuild would give the prompt, not a chat.
 	local current = require("ducktape.chat").current_chat()
 	local current_buf = current and api.nvim_buf_is_valid(current.bufnr) and current.bufnr or nil
 
-	local entries = picker({ current_buf = current_buf })
-
-	local pickers = require("telescope.pickers")
-	local finders = require("telescope.finders")
-	local sorters = require("telescope.sorters")
-	local actions = require("telescope.actions")
-	local action_state = require("telescope.actions.state")
-
-	local function rebuild(p, popts)
-		entries = picker(vim.tbl_extend("keep", popts or {}, { current_buf = current_buf }))
-		p:refresh(
-			finders.new_table({
-				results = entries,
-				entry_maker = function(e)
-					return e
-				end,
-			}),
-			{ reset_prompt = false }
-		)
+	---The chat behind a live entry, or nil if its buffer has gone.
+	local function selected_chat(entry)
+		if not (entry.bufnr and api.nvim_buf_is_valid(entry.bufnr)) then
+			return nil
+		end
+		return require("codecompanion.interactions.chat").buf_get_chat(entry.bufnr)
 	end
 
-	local chat_picker = pickers.new({}, {
-		prompt_title = PROMPT_TITLE,
-		-- The keys and the marker legend live in the `?` overlay rather than here: a
-		-- border title is clipped to the window's width without saying so, and one of
-		-- these mappings deletes a transcript for good.
+	local handle
+	handle = require("ducktape.picker").open({
+		title = "Chats & Sessions",
+		-- The keys and the marker legend live in the help overlay rather than here: a border title is
+		-- clipped to the window's width without saying so, and one of these mappings deletes a
+		-- transcript for good.
 		results_title = "?  help",
-		finder = finders.new_table({
-			results = entries,
-			entry_maker = function(e)
-				return e
+		panel = "chat_list",
+		entries = function()
+			return picker({ current_buf = current_buf })
+		end,
+
+		on_select = function(selection)
+			local entry, kind = selection.value, selection.kind
+			if kind == "live" then
+				focus_live(entry)
+			else
+				restore_session(entry, kind)
+			end
+		end,
+
+		actions = {
+			help = function()
+				toggle_help()
 			end,
-		}),
-		sorter = sorters.get_substr_matcher(),
-		attach_mappings = function(prompt_bufnr, map)
-			-- The overlay is a plain float, so nothing would otherwise take it down with
-			-- the picker it belongs to.
+
+			close = function(_, ctx)
+				ctx.close()
+			end,
+
+			-- Stop this chat coming back, without touching its stored session — so it stays resumable
+			-- from this same list. `kill` is the one that removes a session. On a live chat this means
+			-- closing the buffer and freeing its agent process; on a pending one it means dropping it
+			-- from the reopen set, which demotes it to an ordinary stored session.
+			delete = function(selection, ctx)
+				if selection.kind == "live" then
+					local chat = selected_chat(selection.value)
+					if chat then
+						chat:close()
+					elseif selection.value.bufnr then
+						pcall(api.nvim_buf_delete, selection.value.bufnr, { force = true })
+					end
+				elseif selection.kind == "pending" then
+					require("ducktape.chat").forget_pending(selection.value)
+					M.clear_cache()
+				else
+					return -- a stored session has nothing to close
+				end
+				ctx.refresh()
+			end,
+
+			-- Rename. Works on a live chat and on a stored session alike — the name is remembered
+			-- against the session ID either way, so it survives closing the chat and reopening later.
+			rename = function(selection, ctx)
+				-- The picker closes first: vim.ui.input over a picker fights it for the prompt, and
+				-- the answer can land in the filter instead.
+				ctx.close()
+				if selection.kind == "live" then
+					local chat = selected_chat(selection.value)
+					if chat then
+						require("ducktape.chat").rename(chat)
+					end
+				else
+					rename_stored_session(selection.value)
+				end
+			end,
+
+			-- Remove for good — the chat and the agent's own copy of the conversation, so it does not
+			-- return as a resumable session. The picker closes first because the confirmation is a
+			-- modal cmdline prompt.
+			kill = function(selection, ctx)
+				ctx.close()
+				if selection.kind == "live" then
+					local chat = selected_chat(selection.value)
+					if chat then
+						require("ducktape.chat").delete(chat)
+					end
+				else
+					delete_stored_session(selection.value)
+				end
+			end,
+		},
+
+		-- Telescope-only extras, ignored by a backend that does not offer the hook. Two things need
+		-- its prompt buffer specifically: taking the help overlay down with the picker, and the
+		-- normal-mode aliases telescope users expect.
+		on_attach = function(prompt_bufnr, map, picker_handle)
+			-- The overlay is a plain float, so nothing would otherwise take it down with the picker
+			-- it belongs to.
 			api.nvim_create_autocmd({ "BufLeave", "BufWipeout" }, {
 				buffer = prompt_bufnr,
 				once = true,
 				callback = close_help,
 			})
 
-			-- `?` is Telescope's own which_key, which lists keys but cannot explain the
-			-- markers, so it is replaced. <C-_> is what the terminal sends for <C-/> and
-			-- is the way in from insert mode, where `?` has to stay a literal `?`.
+			-- `?` is telescope's own which_key, which lists keys but cannot explain the markers, so it
+			-- is replaced. Normal mode only: in insert mode `?` has to stay a literal `?`, which is
+			-- what the configured <C-_>/<C-/> pair is for.
 			map("n", "?", toggle_help)
-			map({ "i", "n" }, "<C-_>", toggle_help)
-			map({ "i", "n" }, "<C-/>", toggle_help)
 
-			-- <Esc> and q are what a hand reaches for to dismiss a popup, and both
-			-- otherwise close the picker — which took the list away along with the help
-			-- it was showing. While the overlay is up they dismiss it and stop there;
-			-- with it down they keep their usual meaning, so <Esc> still closes the list.
+			-- <Esc> and q otherwise close the picker, which took the list away along with the help it
+			-- was showing. While the overlay is up they dismiss it and stop there; with it down they
+			-- keep their usual meaning.
+			local actions = require("telescope.actions")
 			local function dismiss_help_or(fallback)
 				return function(prompt_buf)
 					if help_is_open() then
@@ -647,114 +686,25 @@ function M.open()
 				"i",
 				"<Esc>",
 				dismiss_help_or(function()
-					vim.cmd("stopinsert") -- Telescope leaves <Esc> alone in insert mode
+					vim.cmd("stopinsert") -- telescope leaves <Esc> alone in insert mode
 				end)
 			)
-			-- The documented way out of the list regardless, so it must not be swallowed.
-			map({ "i", "n" }, "<C-c>", actions.close)
-
-			actions.select_default:replace(function()
-				local selection = action_state.get_selected_entry()
-				if not selection then
-					return
-				end
-
-				local entry = selection.value
-				local kind = selection.kind
-
-				actions.close(prompt_bufnr)
-
-				if kind == "live" then
-					focus_live(entry)
-				else
-					restore_session(entry, kind)
+			map("n", "r", function()
+				local selection = require("telescope.actions.state").get_selected_entry()
+				if selection then
+					picker_handle.close()
+					if selection.kind == "live" then
+						local chat = selected_chat(selection.value)
+						if chat then
+							require("ducktape.chat").rename(chat)
+						end
+					else
+						rename_stored_session(selection.value)
+					end
 				end
 			end)
-
-			---The chat behind a live entry, or nil if its buffer has gone.
-			local function selected_chat(entry)
-				if not (entry.bufnr and api.nvim_buf_is_valid(entry.bufnr)) then
-					return nil
-				end
-				return require("codecompanion.interactions.chat").buf_get_chat(entry.bufnr)
-			end
-
-			-- CTRL-d: stop this chat coming back, without touching its stored session —
-			-- so it stays resumable from this same list. <C-x> is the one that removes a
-			-- session. On a live chat that means closing the buffer and freeing its agent
-			-- process; on a pending one it means dropping it from the reopen set, which
-			-- demotes it to an ordinary stored session.
-			map({ "i", "n" }, "<C-d>", function()
-				local selection = action_state.get_selected_entry()
-				if not selection then
-					return
-				end
-				if selection.kind == "live" then
-					local chat = selected_chat(selection.value)
-					if chat then
-						chat:close()
-					elseif selection.value.bufnr then
-						pcall(api.nvim_buf_delete, selection.value.bufnr, { force = true })
-					end
-				elseif selection.kind == "pending" then
-					require("ducktape.chat").forget_pending(selection.value)
-					M.clear_cache()
-				else
-					return -- a stored session has nothing to close
-				end
-				local current_picker = action_state.get_current_picker(prompt_bufnr)
-				if current_picker then
-					rebuild(current_picker)
-				end
-			end)
-
-			-- CTRL-r (or r from normal mode): rename. Works on a live chat and on a
-			-- stored session alike — the name is remembered against the session ID
-			-- either way, so it survives closing the chat and reopening it later.
-			local function rename_selected()
-				local selection = action_state.get_selected_entry()
-				if not selection then
-					return
-				end
-				-- The picker closes first: vim.ui.input over a picker fights it for the
-				-- prompt, and the answer can land in the filter instead.
-				actions.close(prompt_bufnr)
-				if selection.kind == "live" then
-					local chat = selected_chat(selection.value)
-					if chat then
-						require("ducktape.chat").rename(chat)
-					end
-				else
-					rename_stored_session(selection.value)
-				end
-			end
-			map({ "i", "n" }, "<C-r>", rename_selected)
-			map("n", "r", rename_selected)
-
-			-- CTRL-x: remove for good — the chat and the agent's own copy of the
-			-- conversation, so it does not return as a resumable session. The picker
-			-- closes first because the confirmation is a modal cmdline prompt.
-			map({ "i", "n" }, "<C-x>", function()
-				local selection = action_state.get_selected_entry()
-				if not selection then
-					return
-				end
-				actions.close(prompt_bufnr)
-				if selection.kind == "live" then
-					local chat = selected_chat(selection.value)
-					if chat then
-						require("ducktape.chat").delete(chat)
-					end
-				else
-					delete_stored_session(selection.value)
-				end
-			end)
-
-			return true
 		end,
 	})
-
-	chat_picker:find()
 end
 
 ---Clear the cached session list; the next open re-queries.

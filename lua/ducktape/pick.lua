@@ -10,9 +10,10 @@
 -- nothing reaches ducktape.providers until <CR> in that window, so backing out at any point leaves
 -- the provider, model and options exactly as they were.
 --
--- Layout comes from the user's own telescope config, deliberately unset here, so this reads
--- the same way as the chat list: prompt at the bottom, results filling upward, closest match
--- nearest the prompt.
+-- The list itself goes through ducktape.picker, so telescope is not required for it: with telescope
+-- installed the layout comes from the user's own config, deliberately unset here, and without it a
+-- built-in float takes over. The options step below is always this plugin's own float — three
+-- options at most, so there is nothing to fuzzy-search.
 
 local M = {}
 
@@ -23,6 +24,7 @@ local api = vim.api
 --=============================================================================
 
 local ui = require("ducktape.ui")
+local keys = require("ducktape.keys")
 
 -- Shared with the chat list, which builds its rows the same way.
 local render = ui.render
@@ -30,17 +32,22 @@ local pad = ui.pad
 
 ---Every provider/model pair that can be selected right now.
 ---
----`ollama` contributes one row per endpoint per model, because its endpoint is part of
----which model you get rather than a separate question — the two lists barely overlap.
+---A provider with endpoints contributes one row per endpoint per model, because its endpoint is
+---part of which model you get rather than a separate question — ollama's two lists barely overlap.
+---
+---Built by walking the registry, so a provider added through config appears here with no edit. It
+---used to enumerate the three shipped providers by hand, which meant a fourth was selectable
+---everywhere except the one place you would go to select it.
 ---@param scope "inline"|"chat"
----@param ollama table<string, string[]> endpoint → models, only what has arrived so far
----@param opencode string[] every opencode model known so far, free tier and Go
+---@param lists table<string, string[]> cache key → models, only what has arrived so far
 ---@return table[]
-local function build_entries(scope, ollama, opencode)
+local function build_entries(scope, lists)
 	local providers = require("ducktape.providers")
+	local withheld = require("ducktape.acp_pool").withheld
 	local current = providers.current(scope)
 
 	local rows = {}
+	---@param model string|nil Nil for a provider whose model list has not arrived
 	local function add(provider, model, endpoint)
 		local is_current = provider == current.provider
 			and model == current.opts.model
@@ -56,18 +63,28 @@ local function build_entries(scope, ollama, opencode)
 			is_current = is_current,
 			tier = tier and tier.label or nil,
 			free = tier and tier.free or false,
+			-- Said on the row rather than discovered after picking it. Two different reasons a row
+			-- may not be usable, and they need different words.
+			unavailable = (not model and "no models discovered yet")
+				or (scope == "inline" and withheld[provider] and "inline unavailable")
+				or nil,
 		})
 	end
 
-	for _, model in ipairs(providers.providers.claude.options.model.values) do
-		add("claude", model)
-	end
-	for _, model in ipairs(opencode) do
-		add("opencode", model)
-	end
-	for _, endpoint in ipairs({ "cloud", "local" }) do
-		for _, model in ipairs(ollama[endpoint] or {}) do
-			add("ollama", model, endpoint)
+	for _, provider in ipairs(providers.names()) do
+		local contributed = false
+		for _, entry in ipairs(providers.cache_keys(provider)) do
+			for _, model in ipairs(lists[entry.key] or providers.models(provider, entry.endpoint)) do
+				add(provider, model, entry.endpoint)
+				contributed = true
+			end
+		end
+		-- A provider whose list has not arrived still gets a row, saying so. Without one it is
+		-- invisible in the only place you would go to select it — and "this provider does not exist"
+		-- and "its model list is still on the way" look identical from the outside. The row cannot be
+		-- committed; `commit` sends the user to :Ducktape models instead.
+		if not contributed then
+			add(provider, nil, providers.endpoint_names(provider)[1])
 		end
 	end
 
@@ -75,10 +92,10 @@ local function build_entries(scope, ollama, opencode)
 	-- tier annotations form a column of their own rather than trailing each name's length.
 	local name_width, model_width = 0, 0
 	for _, row in ipairs(rows) do
-		local name = row.endpoint and ("ollama " .. row.endpoint) or row.provider
+		local name = row.endpoint and (row.provider .. " " .. row.endpoint) or row.provider
 		row.name = name
 		name_width = math.max(name_width, vim.fn.strdisplaywidth(name))
-		model_width = math.max(model_width, vim.fn.strdisplaywidth(row.model))
+		model_width = math.max(model_width, vim.fn.strdisplaywidth(row.model or "—"))
 	end
 
 	local entries = {}
@@ -88,20 +105,18 @@ local function build_entries(scope, ollama, opencode)
 			{ marker, row.is_current and "DucktapeListCurrent" or nil },
 			{ pad(row.name, name_width + 2), "DucktapeWinBarProvider" },
 			{ "· ", "DucktapeListDim" },
-			{ pad(row.model, model_width), "DucktapeWinBarModel" },
+			{ pad(row.model or "—", model_width), row.model and "DucktapeWinBarModel" or "DucktapeListDim" },
 			-- Anything drawing on a plan is highlighted rather than dimmed, so it registers
 			-- without being read for.
 			{ row.tier and ("   " .. row.tier) or "", row.free and "DucktapeListDim" or "DucktapeListStarting" },
+			{ row.unavailable and ("   " .. row.unavailable) or "", "DucktapeListDead" },
 			{ row.is_current and "   current" or "", "DucktapeListCurrent" },
 		})
 		table.insert(entries, {
 			value = row,
 			-- Provider, model and tier are all searchable, so "ollama gpt", "opus" and
 			-- "subscription" each narrow the list
-			ordinal = ("%s %s %s"):format(row.name, row.model, row.tier or ""),
-			display = function(entry)
-				return entry.text, entry.highlights
-			end,
+			ordinal = ("%s %s %s"):format(row.name, row.model or "", row.tier or ""),
 			text = text,
 			highlights = highlights,
 		})
@@ -116,6 +131,16 @@ local function build_entries(scope, ollama, opencode)
 		end
 	end
 	return entries
+end
+
+---The rows the picker would show, for the suite that checks a newly added provider appears in it.
+---
+---Exposed rather than reached into: `build_entries` is a local, and the alternative was a test that
+---opened a real picker and read its finder.
+---@param scope "inline"|"chat"
+---@return table[]
+function M._entries_for_test(scope)
+	return build_entries(scope, {})
 end
 
 --=============================================================================
@@ -139,10 +164,10 @@ local function settings_for(scope, provider)
 	if not spec then
 		return {}
 	end
-	local keys = scope == "inline" and spec.inline_options or spec.chat_options
+	local option_keys = scope == "inline" and spec.inline_options or spec.chat_options
 
 	local out = {}
-	for _, key in ipairs(keys or {}) do
+	for _, key in ipairs(option_keys or {}) do
 		local option = spec.options[key]
 		if option and key ~= "model" and key ~= "endpoint" and option.values then
 			table.insert(out, { key = key, option = option })
@@ -151,27 +176,37 @@ local function settings_for(scope, provider)
 	return out
 end
 
--- What a value means where the name does not say it, and where getting it wrong is
--- expensive. Only claude's mode qualifies: two of its six values are easy to read as the
--- opposite of what they do.
-local VALUE_NOTES = {
-	mode = {
-		default = "asks before editing",
-		acceptEdits = "applies edits unannounced",
-		plan = "read-only",
-		dontAsk = "denies edits, does not allow them",
-		bypassPermissions = "no checks at all",
-		auto = "agent decides",
-		build = "can edit",
-	},
-}
+---What a value means where the name does not say it, and where getting it wrong is expensive.
+---
+---Comes from the provider spec's `value_notes` and `option_notes`, so a provider knows what its own
+---values mean. These used to be one table keyed only by option name, which merged two providers'
+---`mode` values into a single list and could only be right for one of them.
+---@param provider string
+---@param key string
+---@param value string
+---@return string
+local function note_for(provider, key, value)
+	local spec = require("ducktape.providers").spec(provider) or {}
+	-- A standing caveat about the option outranks a per-value note: claude's `fast` is
+	-- model-dependent and there is no per-model list to filter by, so the row says so rather than
+	-- pretending to.
+	local standing = (spec.option_notes or {})[key]
+	if standing then
+		return standing
+	end
+	return ((spec.value_notes or {})[key] or {})[value] or ""
+end
 
 local function notify_current(scope)
 	local providers = require("ducktape.providers")
 	local current = providers.current(scope)
+	local spec = current.spec or {}
 	local bits = {}
-	for _, key in ipairs({ "endpoint", "effort", "mode", "think", "fast" }) do
-		if current.opts[key] then
+	-- Every option the provider offers for this scope except the model, which is named on its own
+	-- ahead of them. Listed from the spec rather than by name, so an option a provider adds shows up
+	-- in the confirmation instead of being applied silently.
+	for _, key in ipairs((scope == "inline" and spec.inline_options or spec.chat_options) or {}) do
+		if key ~= "model" and current.opts[key] then
 			table.insert(bits, ("%s=%s"):format(key, current.opts[key]))
 		end
 	end
@@ -205,6 +240,17 @@ end
 ---@param pending { provider: string, model: string, endpoint: string|nil, options: table<string, string>|nil }
 local function commit(scope, pending)
 	local providers = require("ducktape.providers")
+	-- A placeholder row: the provider is real but nothing is known about its models yet, so there is
+	-- no model to apply. Committing `nil` would leave the scope pointing at a provider with no model
+	-- and fail at the first request instead of here.
+	if pending.model == nil then
+		return ui.say(
+			("[ducktape] no models known for %s yet — :Ducktape models asks every provider what it can reach"):format(
+				pending.provider
+			),
+			vim.log.levels.WARN
+		)
+	end
 	providers.set_provider(scope, pending.provider)
 	-- Endpoint first: on ollama it decides which models exist, so a model is only meaningful
 	-- against one.
@@ -292,14 +338,9 @@ local function open_settings(scope, pending)
 		label_width = math.max(label_width, vim.fn.strdisplaywidth(setting.option.label or setting.key))
 	end
 
-	---Whatever is worth saying about a row at a given value. `fast` is model-dependent — opus
-	---offers it, sonnet does not — and providers.lua has no per-model list to filter by, so
-	---the row says so rather than pretending to.
-	local function note_for(setting, value)
-		if setting.key == "fast" then
-			return "opus only"
-		end
-		return (VALUE_NOTES[setting.key] or {})[value] or ""
+	---Whatever is worth saying about a row at a given value, from the provider's own spec.
+	local function note(setting, value)
+		return note_for(pending.provider, setting.key, value)
 	end
 
 	-- Columns are sized from every value each option *could* take, not the ones showing now:
@@ -313,10 +354,16 @@ local function open_settings(scope, pending)
 	end
 	for _, setting in ipairs(settings) do
 		for _, value in ipairs(setting.option.values) do
-			local note = note_for(setting, value)
+			local note_text = note(setting, value)
 			widest_row = math.max(
 				widest_row,
-				2 + label_width + 2 + 2 + value_width + 2 + (note ~= "" and 3 + vim.fn.strdisplaywidth(note) or 0)
+				2
+					+ label_width
+					+ 2
+					+ 2
+					+ value_width
+					+ 2
+					+ (note_text ~= "" and 3 + vim.fn.strdisplaywidth(note_text) or 0)
 			)
 		end
 	end
@@ -326,7 +373,7 @@ local function open_settings(scope, pending)
 		for i, setting in ipairs(settings) do
 			local value = tostring(pending.options[setting.key] or "unset")
 			local on_cursor = i == float.cursor
-			local note = note_for(setting, value)
+			local note_text = note(setting, value)
 			local text, highlights = render({
 				{ "  " },
 				{ pad(setting.option.label or setting.key, label_width) .. "  ", "DucktapeListKey" },
@@ -339,7 +386,7 @@ local function open_settings(scope, pending)
 				{ value, on_cursor and "DucktapeListCurrent" or "DucktapeWinBarModel" },
 				{ on_cursor and " ▸" or "  ", "DucktapeListDim" },
 				{ string.rep(" ", value_width - vim.fn.strdisplaywidth(value)) },
-				{ note ~= "" and ("   " .. note) or "", "DucktapeListDim" },
+				{ note_text ~= "" and ("   " .. note_text) or "", "DucktapeListDim" },
 			})
 			table.insert(out, text)
 			table.insert(all_highlights, highlights)
@@ -380,10 +427,18 @@ local function open_settings(scope, pending)
 		row = math.max(math.floor((vim.o.lines - height) / 2) - 1, 0),
 		col = math.max(math.floor((vim.o.columns - width) / 2), 0),
 		style = "minimal",
-		border = "rounded",
+		border = require("ducktape.config").get().ui.border,
 		title = (" %s · %s "):format(pending.provider, tostring(pending.model)),
 		title_pos = "center",
-		footer = " h/l cycle · j/k move · <CR> apply · q discard ",
+		-- Named from the bindings, so a remapped panel does not advertise keys that do nothing.
+		footer = (" %s/%s cycle · %s/%s move · %s apply · %s discard "):format(
+			keys.panel_label("picker", "prev_value"),
+			keys.panel_label("picker", "next_value"),
+			keys.panel_label("picker", "down"),
+			keys.panel_label("picker", "up"),
+			keys.panel_label("picker", "apply"),
+			keys.panel_label("picker", "discard")
+		),
 		footer_pos = "center",
 	})
 	vim.wo[float.win].cursorline = true
@@ -428,25 +483,22 @@ local function open_settings(scope, pending)
 		notify_unchanged(scope)
 	end
 
-	local map = function(keys, fn)
-		for _, key in ipairs(keys) do
-			vim.keymap.set("n", key, fn, { buffer = float.buf, nowait = true })
-		end
-	end
-	map({ "j", "<Down>" }, function()
-		move(1)
-	end)
-	map({ "k", "<Up>" }, function()
-		move(-1)
-	end)
-	map({ "l", "<Right>", "<Tab>" }, function()
-		cycle(1)
-	end)
-	map({ "h", "<Left>", "<S-Tab>" }, function()
-		cycle(-1)
-	end)
-	map({ "<CR>" }, apply)
-	map({ "q", "<Esc>" }, discard)
+	keys.bind_panel("picker", float.buf, {
+		down = function()
+			move(1)
+		end,
+		up = function()
+			move(-1)
+		end,
+		next_value = function()
+			cycle(1)
+		end,
+		prev_value = function()
+			cycle(-1)
+		end,
+		apply = apply,
+		discard = discard,
+	})
 
 	-- Clicking away counts as leaving without confirming, so it discards like the rest
 	api.nvim_create_autocmd("WinLeave", {
@@ -464,103 +516,55 @@ end
 -- Pickers
 --=============================================================================
 
-local function telescope()
-	local ok = pcall(require, "telescope")
-	if not ok then
-		ui.say("[ducktape] telescope is required for the model picker", vim.log.levels.ERROR)
-		return nil
-	end
-	return {
-		pickers = require("telescope.pickers"),
-		finders = require("telescope.finders"),
-		sorters = require("telescope.sorters"),
-		actions = require("telescope.actions"),
-		state = require("telescope.actions.state"),
-	}
-end
-
-local function entry_maker(e)
-	return e
-end
-
 ---Choose a scope's provider and model, then confirm through its other options.
 ---@param scope "inline"|"chat"
 function M.open(scope)
-	local t = telescope()
-	if not t then
-		return
-	end
 	ui.ensure_highlights()
 
 	local providers = require("ducktape.providers")
-	local ollama, picker = {}, nil
-	-- Starts at whatever can be answered without asking opencode — the free relay list — and is
-	-- replaced by the full one, Go subscription included, when the query lands.
-	local opencode = providers.opencode_models()
+	-- Cache key → models, holding whatever has arrived so far. Starts at what each provider can
+	-- answer without being asked — a persisted list, a sentinel, a static seed — and each entry is
+	-- replaced as its query lands.
+	local lists = {}
+	local picker
 
-	local function rebuild()
-		if not picker then
-			return
-		end
-		-- The picker is gone as soon as its prompt buffer is, and refreshing a dead one
-		-- throws from inside telescope rather than returning an error.
-		if not (picker.prompt_bufnr and api.nvim_buf_is_valid(picker.prompt_bufnr)) then
-			picker = nil
-			return
-		end
-		picker:refresh(
-			t.finders.new_table({ results = build_entries(scope, ollama, opencode), entry_maker = entry_maker }),
-			{ reset_prompt = false }
-		)
-	end
-
-	-- Every list is queried, and the picker opens without waiting on any of them: ollama's
-	-- models come off the network and opencode's out of a subprocess, so blocking until they
-	-- arrive together would make every switch feel slow — including switches to claude, which
-	-- needs neither. Rows appear as each answers, and both are cached for the session.
-	for _, endpoint in ipairs({ "cloud", "local" }) do
-		providers.ollama_models(endpoint, function(models, err)
-			if models then
-				ollama[endpoint] = models
-				rebuild()
-			elseif err then
-				ui.say(("[ducktape] ollama %s not listed: %s"):format(endpoint, err), vim.log.levels.WARN)
+	-- Every list is queried, and the picker opens without waiting on any of them: some come off the
+	-- network and some out of a subprocess, so blocking until they arrive together would make every
+	-- switch feel slow — including switches to a provider that needs neither. Rows appear as each
+	-- answers, and all of them are cached for the session.
+	--
+	-- Driven off the registry, so a provider added through config is queried too. A hardcoded loop
+	-- meant its list was never asked for and its rows never appeared.
+	for _, target in ipairs(providers.discoverable()) do
+		providers.models_async(target.provider, target.endpoint, function(models, err)
+			if models and #models > 0 then
+				lists[target.key] = models
+				if picker then
+					picker.refresh()
+				end
+			end
+			if err then
+				-- Still usable: `models` falls back to what was already known, so the warning is
+				-- about that one list being incomplete rather than the picker being broken.
+				ui.say(("[ducktape] %s not listed: %s"):format(target.label, err), vim.log.levels.WARN)
 			end
 		end)
 	end
-	providers.opencode_models_async(function(models, err)
-		opencode = models
-		rebuild()
-		if err then
-			-- Still usable: `models` falls back to the configured free list, so the warning is
-			-- about the Go models being absent rather than about the picker being broken.
-			ui.say(("[ducktape] opencode Go models not listed: %s"):format(err), vim.log.levels.WARN)
-		end
-	end)
 
-	local chat_picker = t.pickers.new({}, {
-		prompt_title = scope == "chat" and "Chat provider & model" or "Inline provider & model",
+	picker = require("ducktape.picker").open({
+		title = scope == "chat" and "Chat provider & model" or "Inline provider & model",
 		results_title = "<CR> continue to options",
-		finder = t.finders.new_table({ results = build_entries(scope, ollama, opencode), entry_maker = entry_maker }),
-		sorter = t.sorters.get_substr_matcher(),
-		attach_mappings = function(prompt_bufnr)
-			-- The row is carried forward as a pending selection rather than written now, so
-			-- abandoning the options step leaves the old provider and model in place instead of
-			-- switching to a model whose options were never confirmed.
-			t.actions.select_default:replace(function()
-				local selection = t.state.get_selected_entry()
-				if not selection then
-					return
-				end
-				t.actions.close(prompt_bufnr)
-				local row = selection.value
-				open_settings(scope, { provider = row.provider, model = row.model, endpoint = row.endpoint })
-			end)
-			return true
+		entries = function()
+			return build_entries(scope, lists)
+		end,
+		-- The row is carried forward as a pending selection rather than written now, so abandoning
+		-- the options step leaves the old provider and model in place instead of switching to a
+		-- model whose options were never confirmed.
+		on_select = function(selection)
+			local row = selection.value
+			open_settings(scope, { provider = row.provider, model = row.model, endpoint = row.endpoint })
 		end,
 	})
-	picker = chat_picker
-	chat_picker:find()
 end
 
 return M

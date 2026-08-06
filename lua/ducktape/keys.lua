@@ -63,16 +63,66 @@ function M.globals_enabled()
 end
 
 ---Every action that is a global keymap, i.e. everything except the buffer-local diff set.
+---
+---Identified by shape rather than by exclusion list: an action's entry is a keymap spec, so it
+---carries its left-hand side at `[1]`. `panels` is a table of tables and would otherwise be counted
+---as a nineteenth action, which is how this went wrong once already.
 ---@return string[]
 function M.global_actions()
 	local out = {}
 	for action, entry in pairs(keymaps()) do
-		if action ~= "globals" and type(entry) == "table" and not vim.startswith(action, "diff_") then
+		local is_spec = type(entry) == "table" and type(entry[1]) == "string"
+		if is_spec and not vim.startswith(action, "diff_") then
 			table.insert(out, action)
 		end
 	end
 	table.sort(out)
 	return out
+end
+
+--=============================================================================
+-- Panel keys
+--=============================================================================
+
+---The keys bound to an action inside one of this plugin's own windows.
+---
+---`:h lua-plugin-keymaps` calls buffer-local maps in plugin-owned floats uncontroversial, and they
+---are — but `a`, `r` and `x` sit on strong muscle memory, so they resolve through here. A user table
+---replaces the shipped list for that action only; everything they did not name keeps its default.
+---@param panel string
+---@param action string
+---@return string[]
+function M.panel(panel, action)
+	local configured = vim.tbl_get(keymaps(), "panels", panel, action)
+	if type(configured) == "string" then
+		return { configured }
+	end
+	if type(configured) == "table" then
+		return configured
+	end
+	local shipped = vim.tbl_get(require("ducktape.config").defaults.keymaps, "panels", panel, action)
+	return type(shipped) == "table" and shipped or {}
+end
+
+---Bind every key an action has, in one window.
+---@param panel string
+---@param buf number
+---@param map table<string, fun()> action name → callback
+---@param opts? table Extra options for vim.keymap.set
+function M.bind_panel(panel, buf, map, opts)
+	for action, fn in pairs(map) do
+		for _, lhs in ipairs(M.panel(panel, action)) do
+			vim.keymap.set("n", lhs, fn, vim.tbl_extend("force", { buffer = buf, nowait = true }, opts or {}))
+		end
+	end
+end
+
+---The first key an action is bound to in a panel, for prose that names it.
+---@param panel string
+---@param action string
+---@return string
+function M.panel_label(panel, action)
+	return M.panel(panel, action)[1] or "?"
 end
 
 return M

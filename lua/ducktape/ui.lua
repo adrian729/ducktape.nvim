@@ -7,8 +7,18 @@ local M = {}
 
 -- Shared with the inline list, so a request animates at the same tempo and in the same shape
 -- wherever it is being watched from.
-local SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
-M.SPINNER = SPINNER
+---The spinner frames, from `opts.ui.spinner`. Read per call rather than latched so a config change
+---lands, and defensively defaulted: this runs on a timer, where an error is a stuck spinner.
+local function spinner()
+	local ok, frames = pcall(function()
+		return require("ducktape.config").get().ui.spinner
+	end)
+	if ok and type(frames) == "table" and #frames > 0 then
+		return frames
+	end
+	return { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+end
+M.spinner = spinner
 
 local ns = api.nvim_create_namespace("ducktape_ui")
 
@@ -175,7 +185,8 @@ function M.progress(bufnr, row_fn, label)
 		local row = math.max(0, math.min(s0, rows - 1))
 
 		if not e0 then
-			local text = (" %s %s "):format(SPINNER[frame], ellipsise(label, room_on(bufnr, row)))
+			local frames = spinner()
+			local text = (" %s %s "):format(frames[frame], ellipsise(label, room_on(bufnr, row)))
 			mark = place(mark, row, {
 				virt_text = { { text, "DiagnosticVirtualTextHint" } },
 				virt_text_pos = "eol",
@@ -191,7 +202,7 @@ function M.progress(bufnr, row_fn, label)
 		-- Said in words as well as shown in colour: a tint is easy to miss, and impossible to
 		-- see at all on the row the cursor is sitting on.
 		local extent = span > 0 and ("%d line%s"):format(span, span == 1 and "" or "s") or "insert"
-		local head = ("%s %s "):format(indent, SPINNER[frame])
+		local head = ("%s %s "):format(indent, spinner()[frame])
 		local tail = (" · %s"):format(extent)
 		local room = width_of(bufnr) - vim.fn.strdisplaywidth(head) - vim.fn.strdisplaywidth(tail) - 2
 		mark = place(mark, row, {
@@ -253,7 +264,7 @@ function M.progress(bufnr, row_fn, label)
 			100,
 			100,
 			vim.schedule_wrap(function()
-				frame = (frame % #SPINNER) + 1
+				frame = (frame % #spinner()) + 1
 				render()
 			end)
 		)
@@ -348,7 +359,7 @@ function M.message(opts)
 		width = width,
 		height = height,
 		style = "minimal",
-		border = "rounded",
+		border = require("ducktape.config").get().ui.border,
 		title = (" %s — <CR> open in a chat · q dismiss "):format(opts.title),
 		title_pos = "center",
 	}
@@ -373,14 +384,15 @@ function M.message(opts)
 		end
 	end
 
-	vim.keymap.set("n", "q", close, { buffer = buf, nowait = true })
-	vim.keymap.set("n", "<esc>", close, { buffer = buf, nowait = true })
-	vim.keymap.set("n", "<cr>", function()
-		close()
-		if opts.on_confirm then
-			opts.on_confirm()
-		end
-	end, { buffer = buf, nowait = true })
+	require("ducktape.keys").bind_panel("message", buf, {
+		close = close,
+		confirm = function()
+			close()
+			if opts.on_confirm then
+				opts.on_confirm()
+			end
+		end,
+	})
 
 	return win
 end
@@ -483,7 +495,7 @@ function M.help(rows, opts)
 		row = math.max(math.floor((vim.o.lines - height) / 2) - 1, 0),
 		col = math.max(math.floor((vim.o.columns - width) / 2), 0),
 		style = "minimal",
-		border = "rounded",
+		border = require("ducktape.config").get().ui.border,
 		title = opts.title,
 		title_pos = "center",
 		focusable = false,
@@ -516,6 +528,7 @@ end
 -- to keep their own copies of the same colours, which is how two of them drift apart.
 
 local hl_ready = false
+local hl_augroup
 
 ---Mix a palette colour into the editor's own background.
 ---
@@ -541,11 +554,20 @@ local function wash(colour, alpha, over)
 	return ("#%02x%02x%02x"):format(out[1], out[2], out[3])
 end
 
----Define every `Ai*` highlight group. Latches, so it is cheap to call from anywhere.
+---Define every `Ducktape*` highlight group. Latches, so it is cheap to call from anywhere.
 ---
----Call it from a scheduled context at startup: the fallback branch below is permanent once
----this has run, so resolving the palette before catppuccin has loaded would leave the whole
----UI in stand-in colours for the rest of the session.
+---Call it from a scheduled context at startup: the palette below is resolved once, so asking
+---before catppuccin has loaded would leave the whole UI in stand-in colours for the rest of the
+---session.
+---
+---Three things every plugin should do with highlights and this one used not to:
+---
+---  * every group is defined with `default = true`, so a colourscheme's own `DucktapeListDim` — or
+---    the user's `nvim_set_hl` — wins rather than being clobbered the first time a panel opens;
+---  * `opts.ui.highlights` is merged over the derived values, so a group can be changed without
+---    replacing a palette;
+---  * a `ColorScheme` autocmd re-derives everything, so `:colorscheme` mid-session does not leave
+---    the panels painted for the theme that was loaded at startup.
 function M.ensure_highlights()
 	if hl_ready then
 		return
@@ -579,8 +601,22 @@ function M.ensure_highlights()
 		}
 	end
 
+	-- `opts.ui.highlights` wins over the derived value, and `default = true` means a colourscheme or
+	-- the user's own `nvim_set_hl` wins over both.
+	local overrides = {}
+	local cfg_ok, cfg = pcall(function()
+		return require("ducktape.config").get().ui.highlights
+	end)
+	if cfg_ok and type(cfg) == "table" then
+		overrides = cfg
+	end
+
+	local defined = {}
 	local set = function(name, opts)
-		vim.api.nvim_set_hl(0, name, opts)
+		local final = vim.tbl_extend("force", opts, overrides[name] or {})
+		final.default = true
+		table.insert(defined, name)
+		vim.api.nvim_set_hl(0, name, final)
 	end
 
 	-- Chat winbar
@@ -622,6 +658,22 @@ function M.ensure_highlights()
 	set("DucktapeListDim", { fg = p.overlay1, bg = "NONE" })
 	set("DucktapeListHeader", { fg = p.mauve, bg = "NONE", bold = true })
 	set("DucktapeListKey", { fg = p.blue, bg = "NONE", bold = true })
+
+	-- Re-derive on a theme change. Registered once, from inside the latch, so it exists only after
+	-- the groups do and cannot fire against a half-built palette.
+	if not hl_augroup then
+		hl_augroup = vim.api.nvim_create_augroup("DucktapeHighlights", { clear = true })
+		vim.api.nvim_create_autocmd("ColorScheme", {
+			group = hl_augroup,
+			callback = function()
+				-- The palette itself has to be re-resolved: a catppuccin flavour change moves every
+				-- colour these are derived from, and `wash` mixes against the theme's own base.
+				hl_ready = false
+				vim.schedule(M.ensure_highlights)
+			end,
+		})
+	end
+	M._groups = defined
 end
 
 return M

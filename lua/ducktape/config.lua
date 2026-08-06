@@ -14,16 +14,43 @@
 
 local M = {}
 
----Factory for an ollama HTTP adapter. `overrides` is deep-merged over the shared schema.
----@param overrides table|nil
+--=============================================================================
+-- Adapter factories
+--=============================================================================
+
+---Factory for an HTTP adapter backing one endpoint of one provider.
+---
+---Everything that used to be written twice — the URL, the API-key environment variable — is read
+---off the provider spec at resolve time instead, so `providers.<name>.endpoints` is the only place
+---that knows. `extends` names the codecompanion adapter to build on.
+---@param provider string
+---@param endpoint string
+---@param extends string
+---@param overrides table|nil Deep-merged over the shared schema
 ---@return fun(): table
-local function ollama_adapter(overrides)
+function M.http_adapter(provider, endpoint, extends, overrides)
 	return function()
 		local providers = require("ducktape.providers")
+		local entry = providers.endpoints(provider)[endpoint] or {}
+
+		local env = { url = entry.url }
+		local headers
+		if entry.api_key_env then
+			env.api_key = function()
+				return os.getenv(entry.api_key_env)
+			end
+			headers = { Authorization = "Bearer ${api_key}" }
+		end
+
 		return require("codecompanion.adapters").extend(
-			"ollama",
+			extends,
 			vim.tbl_deep_extend("force", {
+				env = env,
+				headers = headers,
 				schema = {
+					-- The scope is inline here because that is what this adapter is claimed for by
+					-- default; `ducktape.chat` re-points these two at the chat scope when it
+					-- resolves the same adapter for a chat.
 					model = {
 						default = function()
 							return providers.current("inline").opts.model
@@ -42,81 +69,205 @@ local function ollama_adapter(overrides)
 	end
 end
 
+---Factory for an ACP adapter, carrying the requested half of a provider's write defence.
+---
+---The `timeout` and the `clientCapabilities` are the same for every ACP provider; what differs is
+---the session options and the environment, both of which come from the provider's `guard`. So a
+---provider added through config gets the same treatment as the three that ship, without having to
+---restate any of this.
+---@param provider string
+---@param extends string
+---@param overrides table|nil
+---@return fun(): table
+function M.acp_adapter(provider, extends, overrides)
+	return function()
+		local providers = require("ducktape.providers")
+		local cfg = M.get()
+
+		local adapter = require("codecompanion.adapters").extend(
+			extends,
+			vim.tbl_deep_extend("force", {
+				-- The stock value is 20s, and every adapter definition must restate the 90s one
+				-- or silently inherit it.
+				defaults = {
+					timeout = cfg.pool.timeout_ms,
+					-- The requested half of the write defence. The verified half is in
+					-- ducktape.acp_pool, which is the one that actually keeps writes out.
+					session_config_options = providers.required_session_options(provider),
+				},
+				-- Hygiene, not enforcement — the capability is inert for both shipped agents.
+				-- Advertise nothing we do not intend to serve.
+				parameters = {
+					clientCapabilities = { fs = { readTextFile = false, writeTextFile = false } },
+				},
+			}, overrides or {})
+		)
+
+		-- Merged into whatever the adapter already had rather than replacing it: a third-party ACP
+		-- adapter may carry its own API-key entry, and wiping that would stop it authenticating.
+		-- Only touched at all when the provider's guard actually names an environment variable.
+		local guard_env = providers.guard_env(provider, "inline")
+		if next(guard_env) then
+			adapter.env = adapter.env or {}
+			for name in pairs(guard_env) do
+				adapter.env[name] = function()
+					-- Resolved per spawn rather than captured, so a config change lands without a
+					-- restart and the JSON is encoded from whatever the spec says now.
+					return providers.guard_env(provider, "inline")[name]
+				end
+			end
+		end
+		return adapter
+	end
+end
+
+---The claude adapter, which needs two things no other ACP provider does.
+---@return table
+local function claude_adapter()
+	local adapter = M.acp_adapter("claude", "claude_code")()
+	-- Drops CLAUDE_CODE_OAUTH_TOKEN from the adapter definition, which is unnecessary since
+	-- authMethods is empty. Hygiene only, on two counts: the child process still inherits the
+	-- variable from nvim's own environment, and the old _establish_session stalls turned out to be
+	-- a stale claude-agent-acp 0.55.0 that nvm's bin directory put ahead of Homebrew's 0.59.0 on
+	-- PATH — not this token.
+	adapter.env = {}
+	-- `--yolo` is the exact opposite of what inline wants
+	adapter.commands.yolo = nil
+	return adapter
+end
+
 M.defaults = {
 	-- Provider specs and the current selection. Both are deep-merged into ducktape.providers,
 	-- which owns the shipped values; leaving these empty keeps them exactly as shipped.
 	--
-	-- What can be retuned: the models, defaults, effort, mode, and which options each provider
-	-- offers. What cannot: adding a fourth provider kind. Provider names are load-bearing in
-	-- about eighteen places across chat, status, chat_list and pick, so the three that ship are
-	-- the three there are.
+	-- This is a registry: a name that is not one of the three shipped ones adds a provider rather
+	-- than being ignored. What a spec may carry is documented on `ducktape.providers.providers`.
+	-- An ACP provider that names no `guard.required` has one derived from whatever write-denying
+	-- mode its agent advertises, so the smallest useful spec is also a safe one.
 	providers = {},
 	defaults = {},
 
+	-- Session `mode` values that count as denying writes, most preferred first. Consulted when a
+	-- provider's guard is derived rather than named. Widen it only if you know a mode is safe.
+	safe_modes = nil, -- nil = ducktape.providers.SAFE_MODES
+
 	-- The adapters codecompanion resolves by name. These carry the write defence, so they are
 	-- installed by the plugin rather than left for a user to paste into their own config.
+	--
+	-- A provider added through `providers` with an `endpoints` table whose entries name `extends`
+	-- gets its HTTP adapters generated, so this only needs an entry for something the generator
+	-- cannot describe.
 	adapters = {
-		http = {
-			ollama = ollama_adapter({ env = { url = "http://localhost:11434" } }),
-			ollama_cloud = ollama_adapter({
-				env = {
-					url = "https://ollama.com",
-					api_key = function()
-						return os.getenv("OLLAMA_API_KEY")
-					end,
-				},
-				headers = { Authorization = "Bearer ${api_key}" },
-			}),
-		},
+		-- Empty on purpose. Both ollama adapters are generated from `providers.ollama.endpoints`
+		-- by `ducktape.setup`, so the shipped provider takes the same path an added one does — the
+		-- surest way for that path not to rot. Name an adapter here to define it by hand instead;
+		-- an explicit entry always wins over a generated one.
+		http = {},
 		acp = {
-			claude_code = function()
-				local adapter = require("codecompanion.adapters").extend("claude_code", {
-					-- The stock value is 20s, and every adapter definition must restate
-					-- the 90s one or silently inherit it.
-					defaults = {
-						timeout = 90000,
-						-- The actual write defence: dontAsk denies mutating tools,
-						-- shell redirects included. Chat overrides this per session.
-						session_config_options = { mode = "dontAsk" },
-					},
-					-- Hygiene, not enforcement — the capability is inert for both
-					-- agents. Advertise nothing we do not intend to serve.
-					parameters = {
-						clientCapabilities = { fs = { readTextFile = false, writeTextFile = false } },
-					},
-				})
-				-- Drops CLAUDE_CODE_OAUTH_TOKEN from the adapter definition, which is
-				-- unnecessary since authMethods is empty. Hygiene only, on two counts:
-				-- the child process still inherits the variable from nvim's own
-				-- environment, and the old _establish_session stalls turned out to be a
-				-- stale claude-agent-acp 0.55.0 that nvm's bin directory put ahead of
-				-- Homebrew's 0.59.0 on PATH — not this token.
-				-- Assigned rather than merged: tbl_deep_extend cannot remove a key.
-				adapter.env = {}
-				-- `--yolo` is the exact opposite of what inline wants
-				adapter.commands.yolo = nil
-				return adapter
-			end,
-			opencode = function()
-				local adapter = require("codecompanion.adapters").extend("opencode", {
-					defaults = { timeout = 90000 },
-					parameters = {
-						clientCapabilities = { fs = { readTextFile = false, writeTextFile = false } },
-					},
-				})
-				adapter.env = {
-					OPENCODE_PERMISSION = function()
-						return vim.json.encode(require("ducktape.providers").opencode_permission)
-					end,
-				}
-				return adapter
-			end,
+			claude_code = claude_adapter,
+			opencode = M.acp_adapter("opencode", "opencode"),
 		},
 	},
 
 	-- Claimed only when codecompanion's own stock value is still in place, so a user's explicit
 	-- choice survives. See ducktape.setup.
 	set_default_adapters = true,
+
+	-- Inline editing. `prompt` is the contract the model is held to and the single biggest lever on
+	-- the quality of what comes back, so it is configurable rather than compiled in.
+	inline = {
+		-- Lines of surrounding context sent either side of the selection.
+		context_lines = 40,
+		-- One value for every transport. The three used to disagree by 30s for no reason anyone
+		-- had written down.
+		timeout_ms = 90000,
+		-- Send the buffer's diagnostics for the selected range along with the prompt.
+		diagnostics = true,
+
+		prompt = {
+			-- One contract for every transport. An earlier revision asked HTTP and relay for a
+			-- `{"code":"…"}` envelope instead; that is reverted, and deliberately not to be
+			-- reintroduced. Measured on ollama cloud with the same selection: under the envelope
+			-- the model returned the whole enclosing function — the <before> and <after> context
+			-- included — while the plain contract returned exactly the selected lines. No envelope
+			-- survives a code fragment whose braces do not balance, which is most fragments.
+			contract = [[
+You are an inline code editor inside Neovim. The editor decides where your output goes;
+you only supply code. Return ONLY the replacement text for the selected region.
+Reproduce every line you are not changing exactly as given. Do not add commentary.]],
+			no_tools = "You have no tools. Work only from the text below.",
+			deep = [[
+You may read files in this repository to learn its conventions before answering.
+Do not modify any file: the editor applies your output, not you.]],
+			insert = [[
+The selected region is empty. Return only the new code to insert at that point.]],
+		},
+
+		-- How a reply is judged to be code or prose. Every list here is *added to* the shipped one
+		-- rather than replacing it, because the shipped values are measured and losing one is a
+		-- regression nobody would notice until an edit silently did not happen.
+		--
+		-- The reason this is configurable at all: refusal phrasing is per-model-family and
+		-- English-only as shipped, so a provider whose refusals read differently would have them
+		-- applied to the buffer as if they were code.
+		parse = {
+			refusal_openers = {},
+			lead_ins = {},
+			prose_filetypes = {},
+			comment_prefixes = {},
+			leak_patterns = {},
+			-- Set to true to use only what is configured above, ignoring the shipped lists.
+			replace = false,
+		},
+	},
+
+	-- The pool of ACP connections behind inline. One warm primary per provider, overflow spawned
+	-- on demand and reaped when idle.
+	pool = {
+		-- Per provider. opencode idles at ~536 MB, so this cap earns its keep there; an agent with
+		-- a lighter footprint can afford more.
+		cap = 3,
+		idle_overflow_ms = 60 * 1000,
+		idle_primary_ms = 15 * 60 * 1000,
+		reap_interval_ms = 15 * 1000,
+		timeout_ms = 90 * 1000,
+	},
+
+	-- What this plugin's own windows look like, and where its highlights come from.
+	ui = {
+		border = "rounded",
+		-- Which picker the chat list and the model pickers use. "auto" takes the first of
+		-- telescope, snacks, fzf-lua and mini.pick that is installed, and falls back to a plain
+		-- float this plugin draws itself — so none of them is a hard requirement.
+		picker = "auto",
+		spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+		-- Merged over the palette-derived values. Anything set here wins, and every group is
+		-- defined with `default = true` so a colourscheme or your own `nvim_set_hl` wins over both.
+		highlights = {},
+	},
+
+	-- What counts as "this project". Two settings, because the two things being scoped want
+	-- different answers and always have — collapsing them onto one would silently move somebody's
+	-- saved chats.
+	--
+	-- Each takes:
+	--   "git"  the repository root, from `git rev-parse --show-toplevel`
+	--   "root" the nearest ancestor holding a `.git`, via vim.fs.root — no subprocess, but it does
+	--          not resolve symlinks, and an agent reporting a resolved path would then not match
+	--   "cwd"  the working directory
+	--   fun()  anything you like, returning a path or nil
+	session = {
+		-- Which resumable agent sessions the chat list offers. The repository root, so sessions do
+		-- not vanish when nvim is opened in a subdirectory — which is what this was for.
+		scope = "git",
+		-- What saved chats are filed under. The working directory, so two subdirectories of one
+		-- repository keep their own sets of chats.
+		--
+		-- Set this to "git" to share one set per repository instead, which also makes it agree with
+		-- `scope` above. Doing so migrates every existing cwd-keyed set under that root into one,
+		-- merged rather than first-wins — see `read_entries` in ducktape.chat.
+		chats = "cwd",
+	},
 
 	-- Global keymaps. `false` suppresses the whole <leader>c* set and leaves only the
 	-- <Plug>(Ducktape…) maps; `globals = false` inside the table does the same while keeping any
@@ -157,36 +308,75 @@ M.defaults = {
 		diff_reject = { "g3", desc = "AI: reject the diff under the cursor" },
 		diff_next_hunk = { "<leader>cj", desc = "AI: next hunk in the diff under the cursor" },
 		diff_prev_hunk = { "<leader>ck", desc = "AI: previous hunk in the diff under the cursor" },
+
+		-- Buffer-local keys inside this plugin's own windows. `:h lua-plugin-keymaps` calls these
+		-- uncontroversial, and they are — but `a`, `r` and `x` sit on strong muscle memory, so
+		-- there is a way out. Each entry is a list of keys; all of them are bound to the action.
+		panels = {
+			inline_list = {
+				down = { "j", "<Down>" },
+				up = { "k", "<Up>" },
+				-- Three verbs, one each: keep it, get rid of it, go again. g2/g3 come along as
+				-- aliases because they are what settles a diff in the buffer itself.
+				accept = { "a", "g2" },
+				retry = { "r" },
+				discard = { "x", "g3" },
+				open = { "<CR>" },
+				help = { "?" },
+				close = { "q", "<Esc>" },
+			},
+			status = {
+				down = { "j", "<Down>" },
+				up = { "k", "<Up>" },
+				next_value = { "l", "<Right>", "<Tab>" },
+				prev_value = { "h", "<Left>", "<S-Tab>" },
+				edit = { "<CR>" },
+				close = { "q", "<Esc>" },
+			},
+			picker = {
+				down = { "j", "<Down>" },
+				up = { "k", "<Up>" },
+				next_value = { "l", "<Right>", "<Tab>" },
+				prev_value = { "h", "<Left>", "<S-Tab>" },
+				apply = { "<CR>" },
+				discard = { "q", "<Esc>" },
+			},
+			chat_list = {
+				help = { "<C-_>", "<C-/>" },
+				close = { "<C-c>" },
+				delete = { "<C-d>" },
+				rename = { "<C-r>" },
+				kill = { "<C-x>" },
+			},
+			message = {
+				close = { "q", "<Esc>" },
+				confirm = { "<CR>" },
+			},
+		},
 	},
 
 	-- The inline counters in the statusline: the only place that says something arrived while you
 	-- were in another file. Injected from plugin/ducktape.lua at startup, so it is present on the
 	-- first redraw rather than whenever codecompanion happens to load.
-	statusline = { enabled = true },
-
-	opencode = {
-		-- The tool-free relay. Contract: content on stdin, request as arguments, answer on
-		-- stdout; exit 1 usage, 2 empty input, 3 missing opencode/jq, 5 no free model, 6 API
-		-- error, 124 timeout. Anything meeting that contract can stand in.
-		relay = { cmd = "opencode-llm" },
-
-		-- Which free model the `auto` sentinel becomes when a live ACP session has to be pinned to
-		-- something real. Walked in order; the first one this machine actually offers wins, and any
-		-- free model is used if none of them do.
-		--
-		-- A preference, not a fact, which is why it is configured rather than derived: what a
-		-- machine *can* reach comes from `opencode models`, but that is alphabetical, and letting
-		-- the order decide put `auto` on opencode's own ambient default. Free-tier names change, so
-		-- an entry that no longer exists is skipped rather than being an error.
-		prefer = {
-			"opencode/deepseek-v4-flash-free",
-			"opencode/mimo-v2.5-free",
-			"opencode/laguna-s-2.1-free",
-			"opencode/ling-3.0-flash-free",
-			"opencode/north-mini-code-free",
-			"opencode/nemotron-3-ultra-free",
+	statusline = {
+		enabled = true,
+		-- Ordered, because the segment reads left to right in the order things happen: sent,
+		-- answered, waiting on a decision, gave up.
+		icons = {
+			{ key = "running", icon = "↻", hl = "DucktapeListStarting" },
+			{ key = "answered", icon = "◆", hl = "DucktapeListReady" },
+			{ key = "review", icon = "◆", hl = "DucktapeListCurrent" },
+			{ key = "failed", icon = "✖", hl = "DucktapeListDead" },
 		},
+		label = "AI",
 	},
+
+	-- Deprecated. `relay` and `prefer` moved onto the opencode provider spec, so everything about
+	-- a provider is in one place and a second relay-backed provider has somewhere to go. Both are
+	-- still honoured, and win over the spec when set, so an existing config keeps working.
+	--   opts.opencode.relay.cmd  →  opts.providers.opencode.relay.cmd
+	--   opts.opencode.prefer     →  opts.providers.opencode.auto.prefer
+	opencode = { relay = {}, prefer = nil },
 
 	-- Passed to codecompanion.setup() only on the standalone path, where this plugin sets
 	-- codecompanion up itself. Ignored when loaded as an extension, since codecompanion has by
@@ -206,6 +396,29 @@ local resolved
 local function normalise(cfg)
 	if cfg.keymaps == false then
 		cfg.keymaps = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults.keymaps), { globals = false })
+	end
+	return cfg
+end
+
+---Fold the deprecated top-level `opencode` block onto the provider spec it moved to.
+---
+---Done here rather than in `providers.apply` so it works on the config-only path too: a caller
+---that has set the config but not run a full `setup` still gets the value it asked for.
+---@param cfg table
+local function migrate_opencode(cfg)
+	local legacy = cfg.opencode or {}
+	local moved = {}
+	if legacy.relay and legacy.relay.cmd then
+		moved.relay = { cmd = legacy.relay.cmd }
+	end
+	if legacy.prefer then
+		moved.auto = { prefer = legacy.prefer }
+	end
+	if next(moved) then
+		cfg.providers = cfg.providers or {}
+		-- "keep" rather than "force": an explicit `providers.opencode` entry is the current
+		-- spelling and outranks the deprecated one.
+		cfg.providers.opencode = vim.tbl_deep_extend("keep", cfg.providers.opencode or {}, moved)
 	end
 	return cfg
 end
@@ -230,24 +443,41 @@ end
 ---@return table
 function M.setup(opts)
 	opts = opts or {}
-	local cfg = normalise(vim.tbl_deep_extend("force", M.get(), opts))
+	local cfg = normalise(migrate_opencode(vim.tbl_deep_extend("force", M.get(), opts)))
 
-	vim.validate({
-		providers = { cfg.providers, "table" },
-		defaults = { cfg.defaults, "table" },
-		adapters = { cfg.adapters, "table" },
-		keymaps = { cfg.keymaps, "table" },
-		statusline = { cfg.statusline, "table" },
-		opencode = { cfg.opencode, "table" },
-		set_default_adapters = { cfg.set_default_adapters, "boolean" },
-		codecompanion = { cfg.codecompanion, "table" },
-	})
-	vim.validate({
-		["opencode.relay.cmd"] = { cfg.opencode.relay.cmd, "string" },
-		["opencode.prefer"] = { cfg.opencode.prefer, "table" },
-		["statusline.enabled"] = { cfg.statusline.enabled, "boolean" },
-		["keymaps.globals"] = { cfg.keymaps.globals, "boolean" },
-	})
+	for name, value in pairs({
+		providers = cfg.providers,
+		defaults = cfg.defaults,
+		adapters = cfg.adapters,
+		keymaps = cfg.keymaps,
+		statusline = cfg.statusline,
+		inline = cfg.inline,
+		pool = cfg.pool,
+		ui = cfg.ui,
+		session = cfg.session,
+		opencode = cfg.opencode,
+		codecompanion = cfg.codecompanion,
+	}) do
+		vim.validate(name, value, "table")
+	end
+	vim.validate("set_default_adapters", cfg.set_default_adapters, "boolean")
+	vim.validate("safe_modes", cfg.safe_modes, "table", true)
+	vim.validate("statusline.enabled", cfg.statusline.enabled, "boolean")
+	vim.validate("statusline.icons", cfg.statusline.icons, "table")
+	vim.validate("keymaps.globals", cfg.keymaps.globals, "boolean")
+	vim.validate("keymaps.panels", cfg.keymaps.panels, "table")
+	vim.validate("inline.context_lines", cfg.inline.context_lines, "number")
+	vim.validate("inline.timeout_ms", cfg.inline.timeout_ms, "number")
+	vim.validate("inline.diagnostics", cfg.inline.diagnostics, "boolean")
+	vim.validate("inline.prompt", cfg.inline.prompt, "table")
+	vim.validate("inline.parse", cfg.inline.parse, "table")
+	vim.validate("ui.picker", cfg.ui.picker, { "string", "function" })
+	vim.validate("ui.border", cfg.ui.border, { "string", "table" })
+	vim.validate("ui.highlights", cfg.ui.highlights, "table")
+	vim.validate("session.scope", cfg.session.scope, { "string", "function" })
+	for _, key in ipairs({ "cap", "idle_overflow_ms", "idle_primary_ms", "reap_interval_ms", "timeout_ms" }) do
+		vim.validate("pool." .. key, cfg.pool[key], "number")
+	end
 
 	resolved = cfg
 	return resolved

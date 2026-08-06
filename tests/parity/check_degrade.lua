@@ -1,4 +1,9 @@
--- Without telescope, the three features that need it must say so and everything else must work.
+-- Without telescope, nothing is unreachable any more.
+--
+-- This check used to assert the opposite: the chat list and both model pickers named telescope and
+-- did nothing. `ducktape.picker` gives them a backend that needs no plugin, so what is left to
+-- establish is that they really open, that the fallback is the one chosen, and that they say nothing
+-- about telescope — a message naming a plugin you do not need is its own kind of wrong.
 local pass, fail = 0, 0
 local function check(ok, what)
 	if ok then
@@ -12,6 +17,11 @@ end
 check(pcall(require, "telescope") == false, "telescope really is absent")
 check(require("ducktape").bootstrap() == true, "the plugin still sets up")
 
+local picker = require("ducktape.picker")
+local backend, why = picker.resolve()
+check(backend == "default", "the built-in backend is chosen, got " .. tostring(backend))
+check(type(why) == "string" and why ~= "", "and it says why: " .. tostring(why))
+
 local said = {}
 local orig = vim.api.nvim_echo
 vim.api.nvim_echo = function(chunks, ...)
@@ -21,21 +31,38 @@ vim.api.nvim_echo = function(chunks, ...)
 	return orig(chunks, ...)
 end
 
-local function heard_about_telescope(label, fn)
+---Each of the three features telescope used to gate: it has to open a window of its own and not
+---mention telescope on the way.
+local function opens_without_telescope(label, fn)
 	said = {}
+	local before = #vim.api.nvim_list_wins()
 	local ok, err = pcall(fn)
 	local msg = table.concat(said, " ")
 	check(ok, label .. " did not throw" .. (ok and "" or (": " .. tostring(err))))
-	check(msg:lower():find("telescope", 1, true) ~= nil, label .. " named telescope, said: " .. msg:sub(1, 120))
+	check(
+		msg:lower():find("telescope", 1, true) == nil,
+		label .. " did not mention telescope, said: " .. msg:sub(1, 120)
+	)
+	-- The default backend opens two windows, results and prompt. One is enough to establish that
+	-- something was actually shown rather than silently skipped.
+	check(#vim.api.nvim_list_wins() > before, label .. " opened a window")
+
+	-- Back to a clean slate for the next one: these are real floats and they stack.
+	for _, win in ipairs(vim.api.nvim_list_wins()) do
+		if vim.api.nvim_win_get_config(win).relative ~= "" then
+			pcall(vim.api.nvim_win_close, win, true)
+		end
+	end
+	vim.cmd("stopinsert")
 end
 
-heard_about_telescope("the chat list", function()
+opens_without_telescope("the chat list", function()
 	require("ducktape.chat_list").open()
 end)
-heard_about_telescope("the inline picker", function()
+opens_without_telescope("the inline picker", function()
 	require("ducktape.inline").pick()
 end)
-heard_about_telescope("the chat picker", function()
+opens_without_telescope("the chat picker", function()
 	require("ducktape.chat").pick()
 end)
 

@@ -1,5 +1,8 @@
--- ollama over plain HTTP, local or cloud. Structurally tool-free: no tool plumbing exists on
--- this path, so the text-only contract is guaranteed rather than merely asked for.
+-- An HTTP provider, through codecompanion's own client. Structurally tool-free: no tool plumbing
+-- exists on this path, so the text-only contract is guaranteed rather than merely asked for.
+--
+-- Which adapter is resolved comes from the provider spec — including its endpoint, where it has
+-- one — so this serves any HTTP provider, not just the one that shipped first.
 
 local adapters = require("codecompanion.adapters")
 local client = require("codecompanion.http")
@@ -7,13 +10,15 @@ local providers = require("ducktape.providers")
 
 local M = {}
 
-local DEFAULT_TIMEOUT_MS = 90 * 1000
-
----@param ctx { prompt: string, bufnr: number, timeout?: number }
+---@param ctx { prompt: string, bufnr: number, provider?: string, timeout?: number }
 ---@param cb { on_done: fun(text: string), on_error: fun(msg: string) }
 ---@return table handle
 function M.send(ctx, cb)
 	local name = providers.http_adapter("inline")
+	if not name then
+		cb.on_error(("%s has no HTTP adapter"):format(tostring(ctx.provider)))
+		return { cancel = function() end }
+	end
 	local ok, adapter = pcall(adapters.resolve, name)
 	if not ok or not adapter then
 		cb.on_error(("could not resolve the %s adapter (%s)"):format(name, tostring(adapter)))
@@ -28,7 +33,7 @@ function M.send(ctx, cb)
 	-- creates that table — along with model, think, num_ctx and keep_alive from the schema.
 	adapter:map_schema_to_params()
 
-	local timeout = ctx.timeout or DEFAULT_TIMEOUT_MS
+	local timeout = ctx.timeout or require("ducktape.config").get().inline.timeout_ms
 	local job, watchdog
 
 	-- The client invokes this callback twice on an HTTP error: once with the 4xx body as though

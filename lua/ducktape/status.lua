@@ -34,10 +34,6 @@ local buf, win
 -- Row generation
 --=============================================================================
 
----Options that exist only on the live session (category = nil) and are therefore
----chat-only with no stored default to display when no chat is focused.
-local CHAT_ONLY_OPTIONS = { agent = true }
-
 ---@return string|nil provider name or nil
 local function focused_chat_provider()
 	local chat = require("codecompanion.interactions.chat").last_chat()
@@ -47,17 +43,42 @@ local function focused_chat_provider()
 	if not api.nvim_buf_is_valid(chat.bufnr) then
 		return nil
 	end
-	-- The chat's adapter name maps back to a provider name via providers.lua
-	local name = chat.adapter and chat.adapter.name
-	if name == "claude_code" then
-		return "claude"
+	-- The chat's adapter name maps back to a provider through the registry, which is the one place
+	-- that knows both halves. What ducktape recorded on the buffer wins where it has it: a restored
+	-- chat carries the provider it was created with, which need not be the current selection.
+	return chat._ducktape_provider
+		or require("ducktape.providers").provider_for_adapter(chat.adapter and chat.adapter.name)
+end
+
+---The live session's own config option for a category, if there is a session to ask.
+---
+---Guards the same three things every caller needs: that this is a chat row, that a chat is focused,
+---and that the focused chat belongs to the provider being read for. `last_chat()` tracks BufEnter
+---rather than our own provider selection, so without the last of those a row for one provider would
+---be answered from another provider's session.
+---@param scope "inline"|"chat"
+---@param provider string
+---@param category string|nil
+---@return table|nil opt The SessionConfigOption
+local function live_option(scope, provider, category)
+	if scope ~= "chat" or not category then
+		return nil
 	end
-	if name == "opencode" then
-		return "opencode"
+	local chat = require("codecompanion.interactions.chat").last_chat()
+	if not chat or not api.nvim_buf_is_valid(chat.bufnr) then
+		return nil
 	end
-	-- HTTP adapters: "ollama" or "ollama_cloud"
-	if name == "ollama" or name == "ollama_cloud" then
-		return "ollama"
+	if focused_chat_provider() ~= provider then
+		return nil
+	end
+	local conn = chat.acp_connection
+	if not conn or not conn.get_config_options then
+		return nil
+	end
+	for _, opt in ipairs(conn:get_config_options()) do
+		if opt.category == category and opt.type == "select" then
+			return opt
+		end
 	end
 end
 
@@ -66,33 +87,35 @@ end
 ---@param key string
 ---@return string|nil
 local function live_session_value(scope, provider, key)
-	if scope ~= "chat" then
+	local spec = require("ducktape.providers").spec(provider)
+	local option = spec and (spec.options or {})[key]
+	local opt = option and live_option(scope, provider, option.category)
+	return opt and opt.currentValue or nil
+end
+
+---Every value a live session offers for an option, or nil when there is no session to ask.
+---
+---Nil and the empty table mean different things here: nil is "nobody asked the agent", which lets
+---the caller fall back to the spec's own list, while an empty table would claim the agent offers
+---nothing.
+---@param scope "inline"|"chat"
+---@param provider string
+---@param option table
+---@return string[]|nil
+local function live_session_values(scope, provider, option)
+	local opt = live_option(scope, provider, option.category)
+	if not opt then
 		return nil
 	end
-	local chat = require("codecompanion.interactions.chat").last_chat()
-	if not chat or not api.nvim_buf_is_valid(chat.bufnr) then
+	local ok, ACP = pcall(require, "codecompanion.acp")
+	if not ok then
 		return nil
 	end
-	-- The focused chat may belong to a different provider than the one this
-	-- row/value is being read for (last_chat() tracks BufEnter, not our own
-	-- provider selection) — reading against it would return the wrong session.
-	if focused_chat_provider() ~= provider then
-		return nil
+	local values = {}
+	for _, value in ipairs(ACP.flatten_config_options(opt.options or {})) do
+		table.insert(values, value.value)
 	end
-	local conn = chat.acp_connection
-	if not conn or not conn.get_config_options then
-		return nil
-	end
-	local providers = require("ducktape.providers")
-	local option = providers.providers[provider].options[key]
-	if not option or not option.category then
-		return nil
-	end
-	for _, opt in ipairs(conn:get_config_options()) do
-		if opt.category == option.category and opt.type == "select" then
-			return opt.currentValue
-		end
-	end
+	return values
 end
 
 ---@return table[] rows
@@ -138,60 +161,28 @@ local function build_rows()
 					-- Captured so a commit against a since-gone-stale `value` can be checked
 					-- against the CURRENT provider at commit time (see apply_and_stash).
 					built_for_provider = sel.provider,
-					-- For cycling: the list of possible values
+					-- For cycling: the list of possible values, in the order they are preferred.
+					--
+					-- Provider-agnostic, in three steps. Nothing here names a provider, so an option
+					-- added to any spec — including one that arrived through config — cycles without
+					-- an edit to this file.
 					get_values = function()
+						-- The live session first, always: it is the only source that knows the
+						-- session's actual current value, which can fall outside any static list
+						-- the spec carries.
+						local live = live_session_values(scope, sel.provider, option)
+						if live then
+							return live
+						end
 						if option.dynamic then
-							if sel.provider == "opencode" then
-								-- Live session first (mirrors the "Dynamic from
-								-- live session" lookup below) so the real
-								-- current model is found even when it falls
-								-- outside the static free-tier list.
-								if scope == "chat" and option.category and focused_chat_provider() == sel.provider then
-									local chat = require("codecompanion.interactions.chat").last_chat()
-									local conn = chat and chat.acp_connection
-									if conn then
-										local ACP = require("codecompanion.acp")
-										for _, opt in ipairs(conn:get_config_options()) do
-											if opt.category == option.category and opt.type == "select" then
-												local vals = {}
-												for _, v in ipairs(ACP.flatten_config_options(opt.options or {})) do
-													table.insert(vals, v.value)
-												end
-												return vals
-											end
-										end
-									end
-								end
-								return providers.opencode_models()
+							if key == "model" then
+								return providers.models(sel.provider, sel.opts.endpoint)
 							end
-							if sel.provider == "ollama" and scope == "chat" then
-								-- Without a live session, use stored values
-								return {}
-							end
+							-- A dynamic option that is not the model has no source but a live
+							-- session, and there is not one.
+							return {}
 						end
-						-- Dynamic from live session (tried first so the live
-						-- session's actual current value is always found, even
-						-- when it falls outside the static list below)
-						if scope == "chat" and focused_chat_provider() == sel.provider then
-							local chat = require("codecompanion.interactions.chat").last_chat()
-							local conn = chat and chat.acp_connection
-							if conn and option.category then
-								local ACP = require("codecompanion.acp")
-								for _, opt in ipairs(conn:get_config_options()) do
-									if opt.category == option.category and opt.type == "select" then
-										local vals = {}
-										for _, v in ipairs(ACP.flatten_config_options(opt.options or {})) do
-											table.insert(vals, v.value)
-										end
-										return vals
-									end
-								end
-							end
-						end
-						if option.values then
-							return option.values
-						end
-						return {}
+						return option.values or {}
 					end,
 				})
 			end
@@ -212,8 +203,7 @@ local function render_row(row, editing, edit_idx)
 		local reach = row.reach
 		if editing and edit_idx then
 			local providers = require("ducktape.providers")
-			local names = vim.tbl_keys(providers.providers)
-			table.sort(names)
+			local names = providers.names()
 			local previewed = names[edit_idx]
 			if previewed then
 				display_provider = "◂ " .. previewed .. " ▸"
@@ -260,9 +250,9 @@ local function render()
 		table.insert(lines, render_row(row, editing, state.editing_idx))
 	end
 
-	api.nvim_buf_set_option(buf, "modifiable", true)
+	vim.bo[buf].modifiable = true
 	api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-	api.nvim_buf_set_option(buf, "modifiable", false)
+	vim.bo[buf].modifiable = false
 
 	-- Highlight cursor row
 	api.nvim_buf_clear_namespace(buf, -1, 0, -1)
@@ -362,8 +352,7 @@ local function commit_edit()
 
 	if row.kind == "provider" then
 		local providers = require("ducktape.providers")
-		local names = vim.tbl_keys(providers.providers)
-		table.sort(names)
+		local names = providers.names()
 		local idx = state.editing_idx
 		if idx and names[idx] then
 			apply_and_stash(row, names[idx])
@@ -411,8 +400,7 @@ local function cycle_values(delta)
 	local values
 	if row.kind == "provider" then
 		local providers = require("ducktape.providers")
-		values = vim.tbl_keys(providers.providers)
-		table.sort(values)
+		values = providers.names()
 	elseif row.kind == "option" and row.get_values then
 		values = row.get_values()
 	end
@@ -449,9 +437,9 @@ local function open()
 	state.editing_idx = nil
 
 	buf = api.nvim_create_buf(false, true)
-	api.nvim_buf_set_option(buf, "buftype", "nofile")
-	api.nvim_buf_set_option(buf, "bufhidden", "wipe")
-	api.nvim_buf_set_option(buf, "modifiable", true)
+	vim.bo[buf].buftype = "nofile"
+	vim.bo[buf].bufhidden = "wipe"
+	vim.bo[buf].modifiable = true
 
 	-- Rows are only otherwise rebuilt on open()/commit/cancel, so if the panel is left
 	-- open while live state changes elsewhere (chat switched, session restored, inline
@@ -474,6 +462,7 @@ local function open()
 
 	render()
 
+	local keys = require("ducktape.keys")
 	local width = 42
 	local height = math.min(#state.rows, 20)
 	win = api.nvim_open_win(buf, true, {
@@ -483,83 +472,76 @@ local function open()
 		width = width,
 		height = height,
 		style = "minimal",
-		border = "rounded",
+		border = require("ducktape.config").get().ui.border,
 		title = " AI ",
 		title_pos = "center",
-		footer = " ENTER edit · h/l cycle · q close ",
+		-- Named from the bindings rather than written out, so a remapped panel does not end up with
+		-- a footer telling the user to press keys that do nothing.
+		footer = (" %s edit · %s/%s cycle · %s close "):format(
+			keys.panel_label("status", "edit"),
+			keys.panel_label("status", "prev_value"),
+			keys.panel_label("status", "next_value"),
+			keys.panel_label("status", "close")
+		),
 		footer_pos = "center",
 	})
 
-	api.nvim_buf_set_option(buf, "modifiable", false)
+	vim.bo[buf].modifiable = false
 
-	local function on(lhs, fn)
-		vim.keymap.set("n", lhs, fn, { buffer = buf, nowait = true })
+	local function move(delta)
+		state.cursor = math.min(math.max(state.cursor + delta, 1), #state.rows)
+		render()
 	end
 
-	on("j", function()
-		state.cursor = math.min(state.cursor + 1, #state.rows)
-		render()
-	end)
-	on("k", function()
-		state.cursor = math.max(state.cursor - 1, 1)
-		render()
-	end)
-	on("<down>", function()
-		state.cursor = math.min(state.cursor + 1, #state.rows)
-		render()
-	end)
-	on("<up>", function()
-		state.cursor = math.max(state.cursor - 1, 1)
-		render()
-	end)
-	on("<cr>", function()
+	local function edit_or_commit()
 		if state.editing then
-			commit_edit()
-			return
+			return commit_edit()
 		end
 		state.editing = state.cursor
 		local row = state.rows[state.cursor]
 		local values, current
 		if row and row.kind == "provider" then
-			values = vim.tbl_keys(require("ducktape.providers").providers)
-			table.sort(values)
+			values = require("ducktape.providers").names()
 			current = row.provider
 		elseif row and row.kind == "option" and row.get_values then
 			values = row.get_values()
 			current = row.value
 		end
 		local idx
-		if values then
-			for i, v in ipairs(values) do
-				if v == current then
-					idx = i
-					break
-				end
+		for i, v in ipairs(values or {}) do
+			if v == current then
+				idx = i
+				break
 			end
 		end
 		state.editing_idx = idx or 1
 		render()
-	end)
-	on("h", function()
-		cycle_values(-1)
-	end)
-	on("l", function()
-		cycle_values(1)
-	end)
-	on("<esc>", function()
+	end
+
+	local function close_or_cancel()
 		if state.editing then
 			cancel_edit()
 		else
 			M.close()
 		end
-	end)
-	on("q", function()
-		if state.editing then
-			cancel_edit()
-		else
-			M.close()
-		end
-	end)
+	end
+
+	require("ducktape.keys").bind_panel("status", buf, {
+		down = function()
+			move(1)
+		end,
+		up = function()
+			move(-1)
+		end,
+		next_value = function()
+			cycle_values(1)
+		end,
+		prev_value = function()
+			cycle_values(-1)
+		end,
+		edit = edit_or_commit,
+		close = close_or_cancel,
+	})
 end
 
 ---@return boolean

@@ -14,11 +14,21 @@ local ui = require("ducktape.ui")
 
 local M = {}
 
-local CAP = 3 -- per provider; opencode idles at ~536 MB, so this cap earns its keep there
-local IDLE_OVERFLOW_MS = 60 * 1000
-local IDLE_PRIMARY_MS = 15 * 60 * 1000
-local REAP_INTERVAL_MS = 15 * 1000
-local DEFAULT_TIMEOUT_MS = 90 * 1000
+---Providers whose inline-over-ACP path is withheld, and why.
+---
+---Set when a connection could not be given a verified write defence. Nothing else about the
+---provider is affected — chat still works, and so does a relay or HTTP transport if it has one —
+---so this is a withheld capability rather than a broken provider. `:checkhealth ducktape` reads it,
+---and so does the model picker, which is where a user would otherwise pick it and wonder.
+---@type table<string, string>
+M.withheld = {}
+
+---Pool sizing and lifetimes. Read per call rather than latched, so `opts.pool` lands without a
+---restart and a provider with a lighter footprint than opencode's ~536 MB idle can be given room.
+---@return table
+local function tuning()
+	return require("ducktape.config").get().pool
+end
 
 ---@type table<string, table[]>
 local pools = {}
@@ -56,29 +66,90 @@ local function write_guard_available()
 	end
 end
 
----Check that the safety-critical session options actually took effect on this connection.
----
----`acp_defaults.apply` is best-effort: it gives up with a `log:warn` when the agent advertised no
----configOptions, or when the value it was asked for is not one the agent offers. On claude that
----silently leaves the session in its default mode — write-capable — and the only trace is a line
----in codecompanion.log. Since the mode *is* the write defence, this reads the value back off the
----live session and refuses the connection when it did not stick.
----@param provider string
+---What a live session currently reports for each option category.
 ---@param conn table
----@return string|nil error
-local function unmet_requirements(provider, conn)
-	local required = providers.required_session_options(provider)
-	if vim.tbl_isempty(required) then
-		return nil
-	end
-
+---@return table<string, string>
+local function current_options(conn)
 	local current = {}
 	for _, opt in ipairs(conn:get_config_options()) do
 		if opt.category then
 			current[opt.category] = opt.currentValue
 		end
 	end
+	return current
+end
 
+---Set an option by its category, which is what a guard is written in terms of.
+---
+---`set_config_option` wants the agent's own option *id*, and only the live session knows what that
+---is — the category is the stable name across agents, the id is not.
+---@param conn table
+---@param category string
+---@param value string
+---@return boolean
+local function set_by_category(conn, category, value)
+	for _, opt in ipairs(conn:get_config_options()) do
+		if opt.category == category and opt.type == "select" then
+			if opt.currentValue == value then
+				return true -- already there; acp_defaults.apply got it
+			end
+			local ok, set = pcall(conn.set_config_option, conn, opt.id, value)
+			return ok and set ~= false
+		end
+	end
+	return false
+end
+
+---Establish and verify the write defence on a fresh inline connection.
+---
+---Two halves, and only the second is enforcement:
+---
+---  request  `acp_defaults.apply` has already pushed whatever the adapter asked for, but it is
+---           best-effort — it gives up with a `log:warn` when the agent advertised no configOptions
+---           or when the value is not one it offers. On claude that silently leaves the session in
+---           its default, write-capable mode with only a line in codecompanion.log to show it.
+---  verify   the values are read back off the live session, and a connection that did not take
+---           them is refused. Since the mode *is* the defence — neither shipped agent uses the
+---           client-mediated `fs/*` path, so the write guard above covers nothing in practice —
+---           this is the part that actually keeps writes out.
+---
+---A provider whose spec names no requirement has one *derived* from what the agent itself
+---advertises, so a provider nobody has ever heard of is guarded without any configuration. When no
+---write-denying mode exists at all, this refuses — and the caller withholds inline for that
+---provider rather than failing setup or letting an unguarded agent through.
+---@param provider string
+---@param conn table
+---@return string|nil error
+local function establish_guard(provider, conn)
+	local required, why = providers.derive_guard(provider, conn)
+	if not required then
+		return ("%s: %s. Inline is withheld for this provider; chat is unaffected. Set "):format(provider, why)
+			.. ("providers.%s.guard.required to name one, or guard.unguarded = true to accept the risk."):format(
+				provider
+			)
+	end
+	if vim.tbl_isempty(required) then
+		-- `guard.unguarded = true`, or a spec that opted out of deriving. Said once per connection
+		-- rather than silently, because this is the one path where an agent keeps its write tools.
+		if providers.effective_guard(provider).unguarded then
+			notify(
+				("%s runs inline with no write defence (guard.unguarded = true)"):format(provider),
+				vim.log.levels.WARN
+			)
+		end
+		return nil
+	end
+
+	-- Push anything the adapter's own defaults did not land. A derived requirement is not in those
+	-- defaults at all — it could not be, since it is only knowable once the agent has answered.
+	local current = current_options(conn)
+	for category, want in pairs(required) do
+		if current[category] ~= want then
+			set_by_category(conn, category, want)
+		end
+	end
+
+	current = current_options(conn)
 	for category, want in pairs(required) do
 		if current[category] ~= want then
 			return ("%s: the session did not accept %s=%s (it reports %s), so writes would not be "):format(
@@ -193,7 +264,7 @@ local function spawn(provider, cb)
 		if entry.state == "spawning" then
 			on_process_exit(entry)
 		end
-	end, DEFAULT_TIMEOUT_MS)
+	end, tuning().timeout_ms)
 
 	-- Every exit from the setup body reports through cb, so disarming here covers success and
 	-- failure alike without threading a call into each branch.
@@ -241,12 +312,21 @@ local function spawn(provider, cb)
 
 		acp_defaults.apply(adapter, conn)
 
-		local unmet = unmet_requirements(provider, conn)
+		local unmet = establish_guard(provider, conn)
 		if unmet then
+			-- Remembered so the surfaces can say inline is unavailable for this provider before the
+			-- user pays for another spawn to be told the same thing.
+			M.withheld[provider] = unmet
 			drop(entry)
 			pump(provider)
 			return cb(nil, unmet)
 		end
+		M.withheld[provider] = nil
+
+		-- The agent knows its own model list, including anything released since this spec was
+		-- written. Free to take now that a session exists, and the only source for a provider whose
+		-- models strategy is `live_session`.
+		providers.enrich_from_session(provider, conn)
 
 		-- The process can die at any point above; on_process_exit has already dropped the entry
 		-- and reported it, so do not hand a corpse back as ready.
@@ -283,7 +363,7 @@ function pump(provider)
 	-- Nothing to reuse, but the cap may have room again — every entry for this provider can die
 	-- or be dropped while a request is queued, and without this the waiter has no way to ask for
 	-- a fresh process and just burns its whole deadline in the queue.
-	if pools[provider] and #pool < CAP then
+	if pools[provider] and #pool < tuning().cap then
 		local waiter = table.remove(queue, 1)
 		return spawn(provider, waiter)
 	end
@@ -309,7 +389,7 @@ local function acquire(provider, cb)
 		end
 	end
 
-	if #pools[provider] < CAP then
+	if #pools[provider] < tuning().cap then
 		return spawn(provider, cb)
 	end
 
@@ -326,15 +406,15 @@ function M.start_reaper()
 	end
 	reaper = vim.uv.new_timer()
 	reaper:start(
-		REAP_INTERVAL_MS,
-		REAP_INTERVAL_MS,
+		tuning().reap_interval_ms,
+		tuning().reap_interval_ms,
 		vim.schedule_wrap(function()
 			local live = 0
 			for _, pool in pairs(pools) do
 				for i = #pool, 1, -1 do
 					local entry = pool[i]
 					local idle = now() - entry.last_used
-					local limit = entry.primary and IDLE_PRIMARY_MS or IDLE_OVERFLOW_MS
+					local limit = entry.primary and tuning().idle_primary_ms or tuning().idle_overflow_ms
 					if not entry.busy and entry.state == "ready" and idle > limit then
 						table.remove(pool, i)
 						teardown(entry)
@@ -458,7 +538,7 @@ function M.send(opts)
 	-- answer `session/new`, which without this bound is an unreported hang forever. The deadline
 	-- is pushed out again once the prompt actually goes on the wire, so time spent queued behind
 	-- other requests does not eat into the reply's own budget.
-	local timeout = opts.timeout or DEFAULT_TIMEOUT_MS
+	local timeout = opts.timeout or tuning().timeout_ms
 	handle.deadline = now() + timeout
 	handle.stage = "connecting"
 

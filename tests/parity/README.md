@@ -36,7 +36,7 @@ Variants: `default`, `keymaps_false`, `globals_false`, `taken_key`, `own_plug`, 
 | `check_wired.lua` | the parity config | `bootstrap()` loads codecompanion and completes setup, and the adapters in place are the hardened ones |
 | `check_refuse.lua` | `no_extension`, `setup_throws`, `late_throw` | Every action refuses, loudly, rather than driving an unhardened agent |
 | `check_keymaps.lua` | `default`, `keymaps_false`, `globals_false`, `taken_key`, `own_plug` | A user's own mapping wins on both paths, and `false` reaches the globals without touching the diff keys |
-| `check_degrade.lua` | `no_telescope` | The three telescope features name telescope and everything else works |
+| `check_degrade.lua` | `no_telescope` | The three features telescope used to gate really open on the built-in picker backend, without mentioning telescope, and everything else works |
 | `check_live.lua` | the parity config | Real round trips on all three transports, plus that the pool drains |
 | `check_ab_opencode.lua` | the parity config | Runs the pre-extraction `lua/ai/` pool beside this one against the same adapter, for telling a regression apart from a provider's bad day |
 

@@ -1,12 +1,12 @@
 # ducktape.nvim
 
-Inline editing, chat sessions and a three-provider layer on top of
+Inline editing, chat sessions and a provider layer on top of
 [codecompanion.nvim](https://github.com/olimorris/codecompanion.nvim).
 
 Codecompanion supplies the adapters, the chat buffer and the transport. Ducktape is the layer that
 makes a working day out of them: several inline edits in flight at once without stepping on each
 other, chats that survive an nvim restart with nothing respawned until you open one, one option UX
-across Claude, OpenCode and Ollama, and inline requests that cannot write to your filesystem.
+across every provider you configure, and inline requests that cannot write to your filesystem.
 
 ```
     ⠋ ollama · gpt-oss:120b · return 2 instead · 3 lines
@@ -26,13 +26,17 @@ across Claude, OpenCode and Ollama, and inline requests that cannot write to you
   session for the repository can be restored. Titles you set outlive the agent's own auto-titles.
   Provider, model, effort, mode and agent are per chat. Editing a message you already sent and
   asking again forks a fresh agent session carrying your edited transcript.
-- **Three providers, one option UX** — Claude and OpenCode over ACP, Ollama over HTTP (local or
-  cloud). Model lists resolved live and cached, free-tier-first defaults, and a label at the point
-  of choice saying what a model draws on.
-- **A write defence** — inline transports cannot write: Claude runs `mode = dontAsk`, OpenCode gets
-  an explicit deny set, and a connection that did not take the mode is not used. Chat may write but
-  asks first. Open buffers reload themselves when an agent edits a file underneath them, and refuse
-  to when you have unsaved changes.
+- **Any provider, one option UX** — Claude and OpenCode over ACP and Ollama over HTTP out of the
+  box, and a registry rather than a fixed set: one table adds a fourth, and every picker, panel and
+  discovery pass finds it. Model lists resolved live and cached, free-tier-first defaults, and a
+  label at the point of choice saying what a model draws on.
+- **A write defence that covers providers we have never seen** — inline transports cannot write.
+  Claude runs `mode = dontAsk`, OpenCode gets an explicit deny set, and a provider that names
+  nothing has a write-denying mode *derived* from what its own agent advertises. Either way the value
+  is read back off the live session and a connection that did not take it is refused. If no safe
+  mode exists, inline is withheld for that provider alone rather than run unguarded. Chat may write
+  but asks first. Open buffers reload themselves when an agent edits a file underneath them, and
+  refuse to when you have unsaved changes.
 - **Status and plumbing** — a status panel with live per-session option changes, statusline counters
   for running / waiting / failed inline requests, a pooled ACP connection layer with reuse, overflow
   and idle teardown, and `:Ducktape pool` / `:Ducktape send` / `:Ducktape models` for when something looks wrong.
@@ -102,7 +106,7 @@ everything below, including the external programs no plugin manager can install.
 | **codecompanion.nvim** | everything | Developed against **v19.22**. Ducktape reads a dozen of its internal APIs; `:checkhealth ducktape` resolves each one by name, so an upstream refactor is reported rather than discovered. |
 | **plenary.nvim** | everything | Codecompanion's own dependency. Declared here too, since a `vim.pack` user gets nothing transitively. |
 | **nvim-treesitter** with `markdown` + `markdown_inline` | everything | **The one that is easy to miss.** Neovim ships neither parser. Without them the chat does not render and editing a sent message silently does nothing. |
-| **telescope.nvim** | the chat list and both model pickers | Optional at runtime. Those three report a clear error without it; the rest works. |
+| **telescope.nvim** | nothing, strictly | Optional. The chat list and both model pickers use it when it is there and a built-in float when it is not, so what you lose is fuzzy matching and your own picker layout — not the feature. `opts.ui.picker` chooses. |
 | **catppuccin** | the palette the highlights derive from | Optional. A teal stand-in is used instead. |
 | Neovim | — | 0.11+, matching codecompanion's own floor. |
 
@@ -114,8 +118,12 @@ External programs, which have to be on the `PATH` of the shell that launches nvi
 | `opencode` | the OpenCode provider and its model list |
 | `curl` + `$OLLAMA_API_KEY` | Ollama's cloud endpoint |
 | a running `ollama` | Ollama's local endpoint only |
-| `git` | scoping resumable chat sessions to the repository — degrades to "no resumable sessions" |
+| `git` | scoping saved chats and resumable sessions to the repository — degrades to "no resumable sessions", or set `opts.session.scope` |
 | `opencode-llm` + `jq` | the tool-free OpenCode inline path only, and **not bundled** — see below |
+
+The provider rows above are the three that ship. `:checkhealth ducktape` derives this list from
+whatever you have configured, including a provider's agent command and its relay, so it stays right
+after you add one.
 
 ### `opencode-llm` is not vendored
 
@@ -127,7 +135,7 @@ nvim, and two copies would drift. Anything meeting its contract can stand in:
 - exit codes: `1` usage, `2` empty input, `3` a missing prerequisite, `5` no model available,
   `6` API error, `124` timeout
 
-Point ducktape at yours with `opts.opencode.relay.cmd`. Without it, that one path reports
+Point ducktape at yours with `opts.providers.opencode.relay.cmd`. Without it, that one path reports
 `opencode-llm is not on PATH` and the Claude and Ollama providers are unaffected.
 
 ### If your node comes from nvm
@@ -161,7 +169,8 @@ acts on has to come from `vim.g.ducktape`:
 | codecompanion `extensions.ducktape.opts` | everything else | `codecompanion.setup()` |
 
 Putting a field in the wrong table means it is silently ignored, so `:checkhealth ducktape`
-validates each route against its own list and names the mistake.
+validates each route against its own list and names the mistake. It also walks the whole tree, so a
+typo nested inside `inline.prompt` or `keymaps.panels.status` is reported rather than ignored.
 
 ### `vim.g.ducktape`
 
@@ -173,7 +182,9 @@ vim.g.ducktape = {
     globals = true,
     inline = { "<leader>ai", mode = { "n", "x" }, desc = "AI: inline prompt" },
   },
-  -- The inline counters, appended into vim.o.statusline left of the ruler.
+  -- The inline counters, appended into vim.o.statusline left of the ruler. `icons` and `label` set
+  -- what the segment draws; `require("ducktape.statusline").render()` is the component if you
+  -- would rather place it yourself with `enabled = false`.
   statusline = { enabled = true },
 }
 ```
@@ -183,7 +194,8 @@ vim.g.ducktape = {
 ```lua
 opts = {
   -- Deep-merged over the shipped provider specs: models, option values, which options each
-  -- provider offers. Retunes the three providers; does not add a fourth (see below).
+  -- provider offers. A name that is not one of the three shipped ones **adds a provider** — see
+  -- "Adding a provider" below.
   providers = {},
 
   -- The current selection, per interaction and per provider.
@@ -216,19 +228,52 @@ opts = {
   -- choice happens to be copilot.
   set_default_adapters = true,
 
-  opencode = {
-    relay = { cmd = "opencode-llm" },
-    -- Which free model the `auto` sentinel becomes when a live ACP session has to be pinned to
-    -- something real. Walked in order; the first one this machine actually offers wins. A Go
-    -- entry here is ignored — `auto` never spends the subscription.
-    prefer = {
-      "opencode/deepseek-v4-flash-free",
-      "opencode/mimo-v2.5-free",
-      -- …
+  -- Inline editing. `prompt` is the contract the model is held to and the single biggest lever on
+  -- the quality of what comes back.
+  inline = {
+    context_lines = 40,      -- lines sent either side of the selection
+    timeout_ms = 90000,      -- one value for every transport; the three used to disagree
+    diagnostics = true,      -- send the range's diagnostics along with the prompt
+    prompt = { contract = "…", no_tools = "…", deep = "…", insert = "…" },
+    -- How a reply is judged code or prose. Additive: your entries are tried first and the shipped
+    -- ones still apply. The shipped refusal patterns are English, which is the reason this exists.
+    parse = {
+      refusal_openers = {}, lead_ins = {}, prose_filetypes = {},
+      comment_prefixes = {}, leak_patterns = {},
+      replace = false,       -- true to use only what is configured
     },
   },
+
+  -- The pool of ACP connections behind inline, per provider.
+  pool = {
+    cap = 3, idle_overflow_ms = 60000, idle_primary_ms = 900000,
+    reap_interval_ms = 15000, timeout_ms = 90000,
+  },
+
+  ui = {
+    border = "rounded",
+    -- "auto" takes telescope if installed and a built-in float otherwise. Also accepts
+    -- "telescope", "default", or a function taking the picker spec.
+    picker = "auto",
+    spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+    -- Merged over the palette-derived values. Every group is defined with `default = true`, so a
+    -- colourscheme or your own `nvim_set_hl` wins over both.
+    highlights = {},
+  },
+
+  -- What counts as "this project". Two settings, each defaulting to what it already did:
+  --   scope  which resumable agent sessions the chat list offers — the repository root, so they do
+  --          not vanish when nvim is opened in a subdirectory
+  --   chats  what saved chats are filed under — the working directory, so two subdirectories of one
+  --          repository keep their own sets
+  -- Each takes "git", "root" (vim.fs.root, no subprocess), "cwd", or a function. Set `chats = "git"`
+  -- to share one set of chats per repository; existing per-directory sets are merged into it.
+  session = { scope = "git", chats = "cwd" },
 }
 ```
+
+`vim.g.ducktape.keymaps.panels` carries the buffer-local keys inside ducktape's own windows —
+`inline_list`, `status`, `picker`, `chat_list`, `message`. See [`docs/keymaps.md`](docs/keymaps.md).
 
 ### Model lists discover themselves
 
@@ -257,12 +302,83 @@ tier and no Go models, with exit code 0 and nothing on stderr.
 
 `:checkhealth ducktape` prints what has been discovered, when, and what `auto` currently resolves to.
 
-### Three providers, not N
+### Adding a provider
 
-Provider names are load-bearing in about eighteen places across the chat, status, list and picker
-code. `providers` lets you retune Claude, OpenCode and Ollama — their models, option values and
-which options each offers. It does not let you add a fourth, and the plugin does not pretend
-otherwise.
+`providers` is a registry, not a fixed set. Every surface — the pickers, the status panel, the chat
+list, model discovery, health — walks it, so a fourth provider needs no edit to the plugin.
+Codecompanion ships 13 ACP adapters and 18 HTTP ones; ducktape wires three of them by default.
+
+```lua
+opts = {
+  providers = {
+    gemini = {
+      label = "Gemini",
+      kind = "acp",              -- or "http"
+      adapter = "gemini_cli",    -- a codecompanion adapter name
+      inline_options = { "model" },
+      chat_options = { "model", "mode" },
+      options = {
+        model = { label = "Model", category = "model", dynamic = true },
+        mode  = { label = "Mode", category = "mode", values = { "default", "plan" } },
+      },
+      -- Where its model list comes from. `live_session` asks a running agent; `subprocess` runs a
+      -- command; `http_tags` GETs a list endpoint; `static` is a list you write; `adapter`
+      -- delegates to codecompanion's own `schema.model.choices`.
+      models = { strategy = "live_session", seed = { "gemini-3-pro" } },
+    },
+  },
+  defaults = { chat = { provider = "gemini" } },
+}
+```
+
+**You do not have to configure a write defence, and you cannot accidentally skip one.** An ACP
+provider that names no `guard.required` gets one *derived* from the live agent: ducktape reads the
+modes the agent advertises through its session config options and picks the most restrictive
+write-denying one it offers. That value is then read back off the session, and a connection that did
+not take it is refused.
+
+If the agent offers no write-denying mode at all, **inline over ACP is withheld for that provider
+alone** — chat still works, setup still succeeds, the model picker marks the row, and
+`:checkhealth ducktape` says which provider and why. Nothing silently gets a write-capable agent, and
+nothing else breaks to achieve that.
+
+To name the mode yourself, or to opt out deliberately:
+
+```lua
+providers = {
+  gemini = {
+    guard = {
+      required = { mode = "plan" },  -- verified on every connection
+      -- unguarded = true,           -- accept an inline agent with write tools
+    },
+  },
+}
+```
+
+An HTTP provider needs no guard: there is no tool plumbing on that path to deny. Give its endpoints
+an `extends` and ducktape generates the codecompanion adapters for them — which is exactly how the
+two shipped ollama adapters are built, so the path an added provider takes is the one the shipped
+provider already uses.
+
+```lua
+providers = {
+  localai = {
+    label = "LocalAI", kind = "http",
+    endpoints = {
+      main = { url = "http://localhost:8080", adapter = "localai", extends = "openai_compatible" },
+    },
+    models = { strategy = "http_tags", path = "/v1/models", field = "data", name_key = "id" },
+    inline_options = { "endpoint", "model" }, chat_options = { "endpoint", "model" },
+    options = {
+      endpoint = { label = "Endpoint", values = { "main" } },
+      model = { label = "Model", dynamic = true },
+    },
+  },
+}
+```
+
+`tests/test_providers.lua` is this contract written down: it adds both of the above and asserts they
+reach every surface.
 
 ### Standalone, without the extensions block
 

@@ -35,7 +35,7 @@ local function scratch(lines, title)
 		width = width,
 		height = height,
 		style = "minimal",
-		border = "rounded",
+		border = require("ducktape.config").get().ui.border,
 		title = " " .. title .. " ",
 		title_pos = "center",
 	})
@@ -90,7 +90,7 @@ end
 function M.send(provider, prompt)
 	if not providers.providers[provider] then
 		return ui.say(
-			("unknown provider %q — try %s"):format(provider, table.concat(vim.tbl_keys(providers.providers), ", ")),
+			("unknown provider %q — try %s"):format(provider, table.concat(providers.names(), ", ")),
 			vim.log.levels.ERROR
 		)
 	end
@@ -142,11 +142,17 @@ end
 ---ollama model, a subscription that started, an `opencode auth login` — since the lists are
 ---otherwise read from disk and never expire.
 function M.refresh_models()
-	local providers = require("ducktape.providers")
 	providers.forget_models()
 	ui.say("[ducktape] asking every provider what it can reach…")
 
-	local pending, found = 3, {}
+	-- Counted from the registry rather than written down. A hardcoded 3 meant a provider added
+	-- through config was never asked at all, and this still reported success.
+	local targets = providers.discoverable()
+	local pending, found = #targets, {}
+	if pending == 0 then
+		return ui.say("[ducktape] no provider has a model list to ask for", vim.log.levels.WARN)
+	end
+
 	local function done(label, models, err)
 		if models then
 			found[label] = #models
@@ -158,9 +164,9 @@ function M.refresh_models()
 			return
 		end
 		local parts = {}
-		for _, label in ipairs({ "opencode", "ollama cloud", "ollama local" }) do
-			if found[label] then
-				table.insert(parts, ("%s %d"):format(label, found[label]))
+		for _, target in ipairs(targets) do
+			if found[target.label] then
+				table.insert(parts, ("%s %d"):format(target.label, found[target.label]))
 			end
 		end
 		if #parts == 0 then
@@ -174,12 +180,9 @@ function M.refresh_models()
 		)
 	end
 
-	providers.opencode_models_async(function(models, err)
-		done("opencode", models, err)
-	end)
-	for _, endpoint in ipairs({ "cloud", "local" }) do
-		providers.ollama_models(endpoint, function(models, err)
-			done("ollama " .. endpoint, models, err)
+	for _, target in ipairs(targets) do
+		providers.models_async(target.provider, target.endpoint, function(models, err)
+			done(target.label, models and #models > 0 and models or nil, err)
 		end)
 	end
 end

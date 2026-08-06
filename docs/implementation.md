@@ -17,7 +17,8 @@ lua/ducktape/
   model_cache.lua     the discovered model lists, persisted so a restart starts full
   keys.lua            the one place that knows what a key is called; every message reads it
   health.lua          :checkhealth ducktape — deps, parsers, CodeCompanion internals, binaries
-  providers.lua       single source of truth: providers, options, defaults, selection, model lists
+  providers.lua       the provider registry: specs, options, defaults, selection, guards, model lists
+  scope.lua           what counts as "this project" — asked separately for chats and for sessions
   acp_pool.lua        lazy ACP connections, overflow spawning, idle reaping, safety verification
   debug.lua           :Ducktape pool / send smoke harness, and :Ducktape models refresh
   inline/
@@ -25,12 +26,16 @@ lua/ducktape/
     parse.lua         fence stripping, prose and tool-call-leak detection
     http.lua          ollama local + cloud transports (curl over CodeCompanion's HTTP client)
     acp.lua           claude and opencode over ACP — ci/cI differ by prompt only
-    relay.lua         opencode via the opencode-llm program — ci only, guaranteed tool-free
+    relay.lua         a provider's tool-free relay subprocess — ci only, no repo access
     list.lua          live float: every request in flight and every diff still to settle
   statusline.lua      the one always-visible count of what inline has in play
   chat.lua            new chat with preset options, toggle, close-all, adapter resolution
   chat_edit.lua       what <CR> does in a chat: fixes the parse boundary, carries an edited history
-  chat_list.lua       Telescope picker: live chats + resumable sessions from outside nvim
+  chat_list.lua       live chats + resumable sessions from outside nvim, through ducktape.picker
+  picker/
+    init.lua          one list-picking interface, several backends; opts.ui.picker chooses
+    telescope.lua     telescope.nvim
+    default.lua       a float this plugin draws itself, so no picker plugin is required
   pick.lua            the provider/model float: one confirmed change rather than per-keystroke
   reload.lua          open buffers follow an agent's edits, unless you have unsaved changes
   status.lua          interactive option panel: reads providers.lua schema, applies to live sessions
@@ -48,10 +53,19 @@ CodeCompanion's ACP **client** (`acp/init.lua`, `acp/prompt_builder.lua`, etc.) 
 
 `providers.lua` (`lua/ducktape/providers.lua`) is the runtime form of the provider schema. It defines:
 
-- **Which providers exist** — `ollama`, `claude`, `opencode`
+- **Which providers exist** — `ollama`, `claude` and `opencode` ship; the table is a registry, so a
+  name that is not one of those three adds a provider rather than being ignored. Every surface walks
+  it, which is what makes that true: the pickers, the status panel, the chat list's session set,
+  model discovery, `:Ducktape models` and `:checkhealth` all iterate `providers.names()`
+- **What kind each is** — `kind = "acp" | "http"`, inferred from CodeCompanion's own adapter registry
+  when a spec does not say. This replaces a name-keyed if-chain whose fallback sent an unknown
+  provider down *opencode's relay* — a different vendor's script entirely
+- **How far its inline path reaches** — `transports = { shallow, deep }`, defaulted from `kind`, so an
+  ACP provider uses its own agent for both depths unless it declares a relay of its own
 - **What options each carries** — per scope (inline/chat), with labels, categories (for ACP session config mapping), value lists, and dynamic model resolvers
 - **What is currently selected** — stored per scope (`inline` and `chat`), with per-provider option tables
-- **What each transport can reach** — `M.transports` is the canonical table, and it was measured rather than assumed: HTTP and relay can touch nothing; ACP can read any file the user can but writes are denied. Neither agent uses the client-mediated `fs/*` path, so reach is decided by the agent process rather than by us
+- **What each transport can reach** — `M.transports` is the canonical table, and it was measured rather than assumed: HTTP and relay can touch nothing; ACP can read any file the user can but writes are denied. Neither shipped agent uses the client-mediated `fs/*` path, so reach is decided by the agent process rather than by us
+- **What keeps its inline path from writing** — `guard`, see *Write safety*
 
 Defaults are free-first by policy:
 - Inline: ollama cloud `gpt-oss:120b` — ~4s, free, no local RAM
@@ -61,11 +75,13 @@ Model lists are discovered by asking each provider, cached for the session, and 
 - Ollama local: `curl localhost:11434/api/tags`
 - Ollama cloud: `curl https://ollama.com/api/tags` with `OLLAMA_API_KEY`
 - OpenCode: `opencode models`, which is the only source that knows what this machine is entitled to, Go subscription included. It reports what the *authenticated* opencode can reach, so a redirected `$XDG_DATA_HOME` with no `opencode/auth.json` in it answers with the ambient free tier and no Go models, exit 0 and nothing on stderr
-- Claude: the static list matches what the live ACP session offers; the status panel re-resolves from the connection
+- Claude: a static seed until an agent runs, then the live session's own list via `Connection:get_models()`, which is the only ACP source and needs no extra spawn — the pool takes it opportunistically from a connection it already has
 
-The `auto` sentinel for opencode's model means "walk a free-tier fallback list" — meaningful on the relay, but an ACP session has to be pinned to something real, or it lands on opencode's own ambient default, which is not guaranteed to be free.
+Which question a provider is asked comes from its spec's `models` strategy rather than from its name: `http_tags` (a list endpoint), `subprocess` (a command), `live_session` (a running agent), `static`, or `adapter` (delegating to CodeCompanion's own `schema.model.choices`, which several HTTP adapters implement including their own caching — this is HTTP-only, because no shipped ACP adapter carries a `schema` at all). `:Ducktape models` counts its work from that list too; it used to count to a hardcoded three, so a provider added later was never asked and the command still reported success.
 
-**Which** free model is a preference rather than a fact, so it comes from `opts.opencode.prefer` and not from the order a list happens to arrive in. That order used to decide it, and the two sources disagree: a hand-written fallback list is ordered by preference, `opencode models` is alphabetical. So opening the picker once — which is what fills the cache — silently moved `auto` onto whichever free model sorts first, `opencode/big-pickle`, the ambient default the sentinel exists to avoid. Measured cold vs warm, and the reason `prefer` exists. A Go model listed in `prefer` is ignored: `auto` is what the user picked *instead of* naming a model, so resolving it onto a subscription would spend budget on a value they never chose.
+The `auto` sentinel is a per-provider affordance rather than an opencode special case: a spec's `auto = { prefer, eligible, warn }` block is what gives it meaning. For opencode it means "walk a free-tier fallback list" — meaningful on the relay, but an ACP session has to be pinned to something real, or it lands on opencode's own ambient default, which is not guaranteed to be free.
+
+**Which** free model is a preference rather than a fact, so it comes from `opts.providers.opencode.auto.prefer` and not from the order a list happens to arrive in. That order used to decide it, and the two sources disagree: a hand-written fallback list is ordered by preference, `opencode models` is alphabetical. So opening the picker once — which is what fills the cache — silently moved `auto` onto whichever free model sorts first, `opencode/big-pickle`, the ambient default the sentinel exists to avoid. Measured cold vs warm, and the reason `prefer` exists. A Go model listed in `prefer` is ignored: `auto` is what the user picked *instead of* naming a model, so resolving it onto a subscription would spend budget on a value they never chose.
 
 ## Connection pool
 
@@ -288,7 +304,23 @@ Three independent layers keep inline from writing to disk, listed from actual to
 
 2. **Session option verification (guard)**: `acp_defaults.apply` skips options the live session does not offer with only a `log:warn`. If a version bump renames the option or changes its casing, the session stays in the agent's default mode — which on claude means write-capable tools. The pool reads `currentValue` back and refuses the connection when the option did not stick. This fails closed.
 
-3. **Client-side write guard (insurance)**: `handle_fs_write_file_request` is overridden to refuse on every inline ACP connection. Neither agent uses that path today — both write directly to disk with their own tools — but the override removes a latent whole-buffer clobber for one function. Pool init asserts the method exists so a future upstream rename silently stopping the override fails loudly.
+3. **Client-side write guard (insurance)**: `handle_fs_write_file_request` is overridden to refuse on every inline ACP connection. Neither shipped agent uses that path today — both write directly to disk with their own tools — but the override removes a latent whole-buffer clobber for one function. Pool init asserts the method exists so a future upstream rename silently stopping the override fails loudly.
+
+### Where the requirement comes from
+
+Layers 1 and 2 are a pair: layer 1 is *requested*, layer 2 is what makes it *true*. The requirement itself used to be a two-line if-chain keyed on the provider's name, which meant a provider the code had never seen returned an empty set — and `unmet_requirements` treated an empty set as "nothing to check", so it passed trivially and handed inline an agent with its write tools intact. That is the one failure in this plugin that was both silent and unsafe.
+
+It is now derived. `providers.derive_guard` reads the modes the agent advertises through its own session config options and picks the first *write-denying* one from `M.SAFE_MODES` (`dontAsk`, `plan`, `readOnly`, …), ordered by usefulness-while-still-safe rather than by strictness. Modes that *ask* are deliberately absent: inline has no UI to answer a permission prompt, so an asking mode is not a defence but a hang. The chosen value is then pushed with `set_config_option` and read back, so a derived requirement is verified exactly as a named one is.
+
+A spec may still name its own, and a named one wins. Claude does: `plan` would also be safe and `SAFE_MODES` would find it, but `dontAsk` leaves the agent otherwise normal where claude's `plan` produces a plan instead of an edit — and only the spec knows that.
+
+### When no safe mode exists
+
+If the agent advertises no `mode` option, or offers no write-denying value, the connection is refused and the provider is recorded in `acp_pool.withheld`. What is withheld is **inline over ACP for that one provider** — not setup, not chat, not another provider, and not the same provider's relay or HTTP path if it has one. The model picker marks the row, `:checkhealth ducktape` names the provider and the reason, and the first attempt says so.
+
+That shape is deliberate. Failing `setup()` would make a misconfiguration impossible to miss but would also stop a provider working for chat, where it is perfectly safe; allowing the connection would keep everything working and quietly break the plugin's only real promise. Degrading the capability rather than the setup is what gets both: nothing goes unnoticed, and nothing breaks that does not have to.
+
+`guard.unguarded = true` is the deliberate opt-out, and it warns once per connection rather than staying silent — it is the one path where an inline agent keeps its write tools.
 
 ## Key design decisions
 

@@ -165,20 +165,52 @@ end
 -- Adapter resolution
 --=============================================================================
 
----Post-resolution tweak: the opencode adapter in codecompanion.lua sets
----OPENCODE_PERMISSION denying writes, which is the inline defence and too strict for chat —
----chat is supposed to be able to change things. It is swapped for the chat set rather than
----dropped: dropping it handed chat silent write access, so edits happened with nothing
----announcing them. `ask` gets the same confirm-first behaviour claude's `default` mode has.
+---Post-resolution tweak: a provider's inline guard environment denies writes, which is right for
+---inline and too strict for chat — chat is supposed to be able to change things. It is swapped for
+---the chat set rather than dropped: dropping it handed chat silent write access, so edits happened
+---with nothing announcing them. opencode's `ask` gets the same confirm-first behaviour claude's
+---`default` mode has.
+---
+---Driven by the provider's `guard.chat_env`, so a provider added through config gets the same
+---treatment without an edit here.
 ---@param adapter table
 ---@param provider string
 local function apply_chat_permissions(adapter, provider)
-	if not adapter then
+	if not adapter or not adapter.env then
 		return
 	end
-	if provider == "opencode" and adapter.env then
-		adapter.env.OPENCODE_PERMISSION = function()
-			return vim.json.encode(require("ducktape.providers").opencode_chat_permission)
+	local providers = require("ducktape.providers")
+	for name in pairs(providers.guard_env(provider, "chat")) do
+		adapter.env[name] = function()
+			return providers.guard_env(provider, "chat")[name]
+		end
+	end
+end
+
+---Re-point an HTTP adapter's schema defaults at the chat scope.
+---
+---The generated adapters read the inline selection, because that is the scope they are claimed for
+---by default. A chat on the same provider has its own model and options, so the schema has to be
+---told which scope it is serving. Every option the provider offers for chat is redirected, using
+---the option's own `to_schema` where the stored value and the schema field disagree in type.
+---@param adapter table
+---@param provider string
+local function redirect_schema_to_chat(adapter, provider)
+	if not adapter.schema then
+		return
+	end
+	local providers = require("ducktape.providers")
+	local spec = providers.spec(provider) or {}
+	for _, key in ipairs(spec.chat_options or {}) do
+		local option = (spec.options or {})[key]
+		if adapter.schema[key] and option then
+			adapter.schema[key].default = function()
+				local value = (providers.current("chat").opts or {})[key]
+				if option.to_schema then
+					return option.to_schema(value)
+				end
+				return value
+			end
 		end
 	end
 end
@@ -192,27 +224,13 @@ local function resolve_chat_adapter()
 		return nil
 	end
 
-	if sel.provider == "ollama" then
+	if providers.kind(sel.provider) == "http" then
 		local name = providers.http_adapter("chat")
-		local adapter = adapters.resolve(name)
+		local adapter = name and adapters.resolve(name)
 		if not adapter then
 			return nil
 		end
-		-- The stock schema reads from inline scope — redirect to chat
-		if adapter.schema then
-			if adapter.schema.model then
-				adapter.schema.model.default = function()
-					local current = providers.current("chat")
-					return (current and current.opts or {}).model
-				end
-			end
-			if adapter.schema.think then
-				adapter.schema.think.default = function()
-					local current = providers.current("chat")
-					return (current and current.opts or {}).think == "on"
-				end
-			end
-		end
+		redirect_schema_to_chat(adapter, sel.provider)
 		return adapter
 	end
 
@@ -254,8 +272,8 @@ local function resolve_chat_adapter_for(provider, model, saved_opts)
 	local providers = require("ducktape.providers")
 	local adapters = require("codecompanion.adapters")
 
-	if provider == "ollama" then
-		return nil -- HTTP chats have no ACP session, can't persist
+	if not providers.resumable(provider) then
+		return nil -- no agent session to reopen, so nothing to persist against
 	end
 
 	local session_opts = {}
@@ -363,15 +381,24 @@ local function current_buffer_context()
 	return { bufnr = api.nvim_get_current_buf() }
 end
 
----Stash the claude agent so it is applied on the first ChatSubmitted. The agent
----option has category = nil and can only reach the session via conn:set_config_option,
----which needs the live session that does not exist at Chat.new time.
+---Stash any option that can only be applied once the session exists, for the first ChatSubmitted.
+---
+---Such an option has category = nil in the agent's own schema and can only reach the session via
+---conn:set_config_option, which needs the live session that does not exist at Chat.new time. Which
+---options those are comes from the provider spec's `after_session` flag rather than from the
+---provider's name, so a provider with one of its own is carried too.
 ---@param bufnr number
 ---@param provider string
 ---@param opts table
 local function stash_agent(bufnr, provider, opts)
-	if provider == "claude" and opts and opts.agent and opts.agent ~= "default" then
-		pending_agents[bufnr] = opts.agent
+	if not opts then
+		return
+	end
+	for _, key in ipairs(require("ducktape.providers").after_session_options(provider, "chat")) do
+		local value = opts[key]
+		if value and value ~= "default" then
+			pending_agents[bufnr] = value
+		end
 	end
 end
 
@@ -751,7 +778,7 @@ end
 
 local state_file = vim.fn.stdpath("state") .. "/ducktape/chat_sessions.json"
 
----@return table<string, table[]> cwd → saved chat entries
+---@return table<string, table[]> project key → saved chat entries
 local function read_state()
 	return read_json(state_file)
 end
@@ -759,6 +786,70 @@ end
 ---@param data table<string, table[]>
 local function write_state(data)
 	write_json(state_file, data)
+end
+
+---The key this project's saved chats are filed under.
+---
+---`opts.session.chats`, which is the working directory by default — what this has always used. Two
+---subdirectories of one repository therefore keep their own sets of chats, which is the behaviour
+---anyone with saved chats already has.
+---
+---It is deliberately a separate setting from `session.scope`, which decides which resumable *agent
+---sessions* the chat list offers. Those two genuinely want different answers: sessions are filtered
+---by repository root so they do not vanish when nvim is opened in a subdirectory, while chats have
+---always been per directory. Collapsing them onto one setting would move somebody's saved chats
+---without being asked to.
+---@return string
+local function state_key()
+	return require("ducktape.scope").key(require("ducktape.config").get().session.chats)
+end
+
+---This project's saved entries, and the key they should be written back under.
+---
+---When `session.chats` is the working directory — the default — this is a plain lookup and there is
+---nothing to migrate.
+---
+---When it is anything coarser, every existing key at or under the new one is *merged* rather than
+---the first match winning. First-wins loses chats: with `/repo/frontend` and `/repo/backend` each
+---holding their own set, opening one of them would claim the `/repo` key and leave the other's
+---entries in the file with nothing that ever looks them up again.
+---@param data table<string, table[]>
+---@param override_key? string The key to read for, instead of the configured one. Tests only.
+---@return table[]|nil entries, string key
+local function read_entries(data, override_key)
+	local key = override_key or state_key()
+	local cwd = vim.fn.getcwd()
+
+	-- The common case, and the default: the key is the directory, so there is only ever one bucket.
+	if key == cwd then
+		local entries = data[key]
+		return type(entries) == "table" and entries or nil, key
+	end
+
+	-- A coarser key. Gather its own bucket plus every directory-scoped one beneath it, in a stable
+	-- order so a merge is reproducible.
+	local sources = {}
+	for stored in pairs(data) do
+		if stored == key or vim.startswith(stored, key .. "/") then
+			table.insert(sources, stored)
+		end
+	end
+	table.sort(sources)
+
+	local merged, seen = {}, {}
+	for _, stored in ipairs(sources) do
+		for _, entry in ipairs(data[stored] or {}) do
+			-- Deduplicated by session ID: the same chat can legitimately appear under two keys once
+			-- a repository has been opened from two of its subdirectories.
+			local id = entry.session_id
+			if id == nil or not seen[id] then
+				seen[id or entry] = true
+				table.insert(merged, entry)
+			end
+		end
+	end
+
+	return #merged > 0 and merged or nil, key
 end
 
 ---Has this chat completed at least one exchange? Only then has the agent committed
@@ -853,7 +944,16 @@ local function save_open_chats()
 	end
 
 	local data = read_state()
-	data[vim.fn.getcwd()] = #entries > 0 and entries or nil
+	local key = state_key()
+	data[key] = #entries > 0 and entries or nil
+	-- With a coarser `session.chats`, drop every directory-scoped bucket the read merged from, so the
+	-- two forms do not both accumulate. Only the ones beneath this key: another repository's entries
+	-- are none of our business.
+	for stored in pairs(data) do
+		if stored ~= key and vim.startswith(stored, key .. "/") then
+			data[stored] = nil
+		end
+	end
 	write_state(data)
 end
 
@@ -876,15 +976,15 @@ local function forget_session(sid)
 	end
 
 	local data = read_state()
-	local cwd = vim.fn.getcwd()
-	if type(data[cwd]) == "table" then
+	local saved, key = read_entries(data)
+	if saved then
 		local kept = {}
-		for _, entry in ipairs(data[cwd]) do
+		for _, entry in ipairs(saved) do
 			if entry.session_id ~= sid then
 				table.insert(kept, entry)
 			end
 		end
-		data[cwd] = #kept > 0 and kept or nil
+		data[key] = #kept > 0 and kept or nil
 		write_state(data)
 	end
 	M.set_saved_title(sid, nil)
@@ -901,15 +1001,15 @@ function M.forget_pending(entry)
 	-- Written through now rather than left to the quit-time save, so the decision survives
 	-- a crash and matches what the user just watched happen.
 	local data = read_state()
-	local cwd = vim.fn.getcwd()
-	if type(data[cwd]) == "table" and entry.session_id ~= nil then
+	local saved, key = read_entries(data)
+	if saved and entry.session_id ~= nil then
 		local kept = {}
-		for _, e in ipairs(data[cwd]) do
+		for _, e in ipairs(saved) do
 			if e.session_id ~= entry.session_id then
 				table.insert(kept, e)
 			end
 		end
-		data[cwd] = #kept > 0 and kept or nil
+		data[key] = #kept > 0 and kept or nil
 		write_state(data)
 	end
 end
@@ -1127,8 +1227,11 @@ function M.restore_session(entry, opts)
 	local sid = entry.session_id
 	local sel = require("ducktape.providers").current("chat")
 	local provider = entry.provider or (sel and sel.provider)
-	if provider == "ollama" then
-		return ui.say("[ducktape] ollama chats have no ACP session to resume", vim.log.levels.WARN)
+	if not require("ducktape.providers").resumable(provider) then
+		return ui.say(
+			("[ducktape] %s chats have no agent session to resume"):format(tostring(provider)),
+			vim.log.levels.WARN
+		)
 	end
 
 	consume_pending(entry)
@@ -1270,12 +1373,23 @@ local function setup_persistence()
 	-- Nothing is restored here. The saved entries are simply held as pending, and each
 	-- becomes a real chat only when the user picks it — which is why an nvim start costs no
 	-- agent subprocesses at all, however many chats were open when it last quit.
-	local saved = read_state()[vim.fn.getcwd()]
+	local saved = read_entries(read_state())
 	if type(saved) == "table" then
 		pending = vim.deepcopy(saved)
 	end
 end
 
 setup_persistence()
+
+---The saved-chat read path, for the suite that guards it against losing chats.
+---
+---Exposed rather than reimplemented in the test: the first-wins migration that dropped a
+---subdirectory's chats would have passed any reimplementation of itself.
+---@param data table<string, table[]>
+---@param key string
+---@return table[]|nil entries, string key
+function M._read_entries_for_test(data, key)
+	return read_entries(data, key)
+end
 
 return M

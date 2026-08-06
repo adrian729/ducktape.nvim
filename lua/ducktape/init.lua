@@ -60,18 +60,51 @@ local function install_adapters(cfg)
 	end
 end
 
+---Generate HTTP adapters for any provider endpoint that describes one.
+---
+---A provider added through `opts.providers` with an `endpoints` table whose entries name `extends`
+---gets a codecompanion adapter per endpoint, carrying the URL, the API key and the shared schema.
+---Without this, adding an HTTP provider would mean hand-writing an adapter that restates what the
+---endpoint already said.
+---
+---Never overwrites an entry that `opts.adapters` already names: an explicit definition is the more
+---specific statement of intent.
+---@param cfg table
+local function generate_adapters(cfg)
+	local providers = require("ducktape.providers")
+	cfg.adapters = cfg.adapters or {}
+	cfg.adapters.http = cfg.adapters.http or {}
+
+	for _, provider in ipairs(providers.names()) do
+		for endpoint, entry in pairs(providers.endpoints(provider)) do
+			if entry.extends and entry.adapter and cfg.adapters.http[entry.adapter] == nil then
+				cfg.adapters.http[entry.adapter] =
+					require("ducktape.config").http_adapter(provider, endpoint, entry.extends)
+			end
+		end
+	end
+end
+
 ---Take over codecompanion's default adapter for the interactions this plugin drives, but only
 ---where the value is still codecompanion's own stock `"copilot"`.
 ---
 ---That is the only signal available: by the time an extension runs, `config.setup(opts)` has
 ---already merged the user's own choice in, so a user who deliberately picked copilot is
 ---indistinguishable from one who picked nothing. `set_default_adapters = false` is how they say so.
+---
+---Which adapter is claimed comes from the configured defaults rather than a fixed list, so a user
+---who made a provider of their own the default gets that one claimed instead of ollama's.
 local function claim_default_adapters()
 	local cc = require("codecompanion.config")
-	local wanted = { chat = "claude_code", inline = "ollama_cloud", cmd = "ollama_cloud" }
+	local providers = require("ducktape.providers")
+
+	local chat = providers.adapter_name(providers.current("chat").provider, "chat")
+	local inline = providers.adapter_name(providers.current("inline").provider, "inline")
+	local wanted = { chat = chat, inline = inline, cmd = inline }
+
 	for interaction, adapter in pairs(wanted) do
 		local at = cc.interactions and cc.interactions[interaction]
-		if at and at.adapter == "copilot" then
+		if adapter and at and at.adapter == "copilot" then
 			at.adapter = adapter
 		end
 	end
@@ -103,6 +136,9 @@ function M.setup(opts)
 	end
 
 	require("ducktape.providers").apply(cfg)
+	-- After apply, so a provider that arrived through `opts.providers` is in the registry, and
+	-- before install_adapters, which is what writes the result into codecompanion.
+	generate_adapters(cfg)
 	-- Nothing on this machine has ever asked the providers what they can reach, so ask now, in the
 	-- background. Without it the first picker of a fresh install opens with only the `auto` sentinel
 	-- and fills in once the query lands — which works, but makes an install look like it needs a

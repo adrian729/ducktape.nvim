@@ -61,42 +61,74 @@ for _, state in pairs(STATE) do
 	STATE_WIDTH = math.max(STATE_WIDTH, vim.fn.strdisplaywidth(state.label))
 end
 
--- Widest first: the window is at least as wide as whichever of these fits, so the footer is
--- never clipped — nvim truncates a border footer to the window silently.
---
--- Which is also why the full set of keys is not down here any more. Spelling out all six cost 94
--- cells, and since the window is sized to fit its footer, that made every list at least 96 wide —
--- wider than the rows themselves need (67 to 87 for a typical one). The border now carries the
--- three verbs and points at `?` for the rest, the way the chat list does.
-local FOOTERS = {
-	" a accept · r again · x discard · ? keys ",
-	" a · r · x · ? keys ",
-	" ? keys ",
-}
+---The three progressively shorter border footers, widest first.
+---
+---Widest first because the window is at least as wide as whichever of these fits, and nvim
+---truncates a border footer to the window silently.
+---
+---Built from the bindings rather than written out. Spelling out all six keys cost 94 cells, and
+---since the window is sized to fit its footer that made every list at least 96 wide — wider than
+---the rows need. The border carries the three verbs and points at the help key for the rest.
+---@return string[]
+local function FOOTERS()
+	local keys = require("ducktape.keys")
+	local a = keys.panel_label("inline_list", "accept")
+	local r = keys.panel_label("inline_list", "retry")
+	local x = keys.panel_label("inline_list", "discard")
+	local h = keys.panel_label("inline_list", "help")
+	return {
+		(" %s accept · %s again · %s discard · %s keys "):format(a, r, x, h),
+		(" %s · %s · %s · %s keys "):format(a, r, x, h),
+		(" %s keys "):format(h),
+	}
+end
 
--- Everything the list can do, and what the markers in it mean. Not on the border, because the
--- border is clipped to the window without warning and this has to be complete.
-local HELP = {
-	{ header = "This row" },
-	{ key = "<CR>", desc = "go to the edit, or read a reply that came to nothing" },
-	{ key = "a", desc = "accept — a diff is applied, a reply goes into a chat" },
-	{ key = "r", desc = "ask again, with your instruction pre-filled to reword" },
-	{ key = "x", desc = "get rid of it: reject, cancel or dismiss, whichever it is" },
-	{},
-	{ header = "Everything" },
-	{ key = "A", desc = "accept every diff — replies waiting on you are left alone" },
-	{ key = "X", desc = "done with all of it: cancel, reject and dismiss" },
-	{},
-	{ header = "Markers" },
-	{ key = "↻", key_hl = "DucktapeListStarting", desc = "still running" },
-	{ key = "◆", key_hl = "DucktapeListReady", desc = "an edit to review, or a reply to read" },
-	{ key = "✖", key_hl = "DucktapeListDead", desc = "failed — r asks again, x drops it" },
-	{},
-	{ header = "Navigate" },
-	{ key = "j k", desc = "move the selection (arrows work too)" },
-	{ key = "? <Esc> q", desc = "close this help, keeping the list" },
-	{ key = "q <Esc>", desc = "close the list, once this help is down" },
-}
+---Everything the list can do, and what the markers in it mean.
+---
+---Not on the border, because the border is clipped to the window without warning and this has to be
+---complete. Every key is named from its binding, so a remapped panel documents itself.
+---@return table[]
+local function HELP()
+	local keys = require("ducktape.keys")
+	local function label(action)
+		return table.concat(keys.panel("inline_list", action), " ")
+	end
+	local accept = keys.panel_label("inline_list", "accept")
+	local retry = keys.panel_label("inline_list", "retry")
+	local discard = keys.panel_label("inline_list", "discard")
+	local icons = {}
+	for _, part in ipairs(require("ducktape.config").get().statusline.icons or {}) do
+		icons[part.key] = part.icon
+	end
+	return {
+		{ header = "This row" },
+		{ key = label("open"), desc = "go to the edit, or read a reply that came to nothing" },
+		{ key = accept, desc = "accept — a diff is applied, a reply goes into a chat" },
+		{ key = retry, desc = "ask again, with your instruction pre-filled to reword" },
+		{ key = discard, desc = "get rid of it: reject, cancel or dismiss, whichever it is" },
+		{},
+		{ header = "Everything" },
+		{ key = accept:upper(), desc = "accept every diff — replies waiting on you are left alone" },
+		{ key = discard:upper(), desc = "done with all of it: cancel, reject and dismiss" },
+		{},
+		{ header = "Markers" },
+		{ key = icons.running or "↻", key_hl = "DucktapeListStarting", desc = "still running" },
+		{ key = icons.answered or "◆", key_hl = "DucktapeListReady", desc = "an edit to review, or a reply to read" },
+		{
+			key = icons.failed or "✖",
+			key_hl = "DucktapeListDead",
+			desc = ("failed — %s asks again, %s drops it"):format(retry, discard),
+		},
+		{},
+		{ header = "Navigate" },
+		{
+			key = ("%s %s"):format(keys.panel_label("inline_list", "down"), keys.panel_label("inline_list", "up")),
+			desc = "move the selection (arrows work too)",
+		},
+		{ key = ("%s %s"):format(label("help"), label("close")), desc = "close this help, keeping the list" },
+		{ key = label("close"), desc = "close the list, once this help is down" },
+	}
+end
 
 -- The help overlay, when it is up. Separate from `view` because it outlives a redraw and is torn
 -- down with the list rather than with a frame.
@@ -177,7 +209,7 @@ end
 ---@return table state, string marker
 local function state_of(entry, now)
 	if entry.kind == "request" then
-		return STATE.thinking, ui.SPINNER[view.frame]
+		return STATE.thinking, ui.spinner()[view.frame]
 	end
 	if entry.kind ~= "diff" then
 		local state = STATE[entry.kind]
@@ -837,8 +869,9 @@ local function open()
 	-- Sized once, from the rows on show: the window has to be at least as wide as the footer or
 	-- nvim clips it without saying so, and re-measuring per frame would resize the box under a
 	-- reader every time a new request arrived.
-	local footer = FOOTERS[#FOOTERS]
-	for _, candidate in ipairs(FOOTERS) do
+	local footers = FOOTERS()
+	local footer = footers[#footers]
+	for _, candidate in ipairs(footers) do
 		if vim.fn.strdisplaywidth(candidate) + 2 <= vim.o.columns - 4 then
 			footer = candidate
 			break
@@ -858,7 +891,7 @@ local function open()
 		width = view.width,
 		height = height,
 		style = "minimal",
-		border = "rounded",
+		border = require("ducktape.config").get().ui.border,
 		title = view.title,
 		title_pos = "center",
 		footer = footer,
@@ -869,58 +902,72 @@ local function open()
 	vim.wo[view.win].cursorline = true
 	vim.bo[view.buf].modifiable = false
 
-	local function on(keys, fn)
-		for _, key in ipairs(keys) do
-			vim.keymap.set("n", key, fn, { buffer = view.buf, nowait = true })
-		end
-	end
-	on({ "j", "<Down>" }, function()
-		move(1)
-	end)
-	on({ "k", "<Up>" }, function()
-		move(-1)
-	end)
-	-- Three verbs, one each: keep it, get rid of it, go again.
-	--
-	-- There is no reject key, because there was nothing for it to do that x did not already do —
-	-- on a diff both rejected, on a reply both dismissed, and on a running request r could only
-	-- point at x. So x absorbed it, and r went to the thing that had no key: asking again.
-	--
-	-- g2/g3 come along as aliases because they are what settles a diff in the buffer itself, and
-	-- g3 lands on discard, which is what it means there.
-	on({ "a", "g2" }, function()
-		settle("accept")
-	end)
-	on({ "r" }, retry)
-	on({ "x", "g3" }, discard_selected)
-	-- Uppercase is "all of them", the same way X is to x.
-	on({ "A" }, function()
-		settle_every("accept")
-	end)
-	on({ "X" }, discard_every)
-	on({ "R" }, function()
-		-- Bound to say so rather than left silent: a key that does nothing reads as a dropped
-		-- keypress, and this one used to mean something.
-		ui.say(
-			"[ducktape] there is no ask-again-for-everything — r asks again one row at a time, since each carries its own prompt",
-			vim.log.levels.INFO
-		)
-	end)
-	on({ "<CR>" }, jump)
-	on({ "?" }, function()
+	local function toggle_help()
 		if help_is_open() then
 			return close_help()
 		end
-		help = ui.help(HELP, { title = " Inline list ", key_column = 11 })
-	end)
+		help = ui.help(HELP(), { title = " Inline list ", key_column = 11 })
+	end
+
 	-- <Esc> and q are what a hand reaches for to dismiss a popup, and both otherwise close the
 	-- list — which would take the list away along with the help it was explaining. While the
 	-- overlay is up they dismiss it and stop there.
-	on({ "q", "<Esc>" }, function()
+	local function close_or_dismiss_help()
 		if help_is_open() then
 			return close_help()
 		end
 		M.close()
+	end
+
+	local keys = require("ducktape.keys")
+	keys.bind_panel("inline_list", view.buf, {
+		down = function()
+			move(1)
+		end,
+		up = function()
+			move(-1)
+		end,
+		-- Three verbs, one each: keep it, get rid of it, go again.
+		--
+		-- There is no reject key, because there was nothing for it to do that discard did not already
+		-- do — on a diff both rejected, on a reply both dismissed, and on a running request retry could
+		-- only point at discard. So discard absorbed it, and retry went to the thing that had no key.
+		--
+		-- g2/g3 come along as aliases because they are what settles a diff in the buffer itself, and
+		-- g3 lands on discard, which is what it means there.
+		accept = function()
+			settle("accept")
+		end,
+		retry = retry,
+		discard = discard_selected,
+		open = jump,
+		help = toggle_help,
+		close = close_or_dismiss_help,
+	})
+
+	-- Uppercase is "all of them", the same way X is to x. Derived from whatever the single-row keys
+	-- are bound to, so a remapped panel keeps the relationship instead of stranding these on the
+	-- shipped letters.
+	local function upper(action, fn)
+		for _, lhs in ipairs(keys.panel("inline_list", action)) do
+			if #lhs == 1 and lhs:match("%a") then
+				vim.keymap.set("n", lhs:upper(), fn, { buffer = view.buf, nowait = true })
+			end
+		end
+	end
+	upper("accept", function()
+		settle_every("accept")
+	end)
+	upper("discard", discard_every)
+	upper("retry", function()
+		-- Bound to say so rather than left silent: a key that does nothing reads as a dropped
+		-- keypress, and this one used to mean something.
+		ui.say(
+			"[ducktape] there is no ask-again-for-everything — "
+				.. keys.panel_label("inline_list", "retry")
+				.. " asks again one row at a time, since each carries its own prompt",
+			vim.log.levels.INFO
+		)
 	end)
 
 	-- Moving away closes it, which is also what guarantees the redraw timer never outlives the
@@ -953,7 +1000,7 @@ local function open()
 			if not M.is_open() then
 				return M.close()
 			end
-			view.frame = (view.frame % #ui.SPINNER) + 1
+			view.frame = (view.frame % #ui.spinner()) + 1
 			draw()
 		end)
 	)

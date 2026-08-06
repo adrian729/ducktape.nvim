@@ -25,7 +25,6 @@ local M = {}
 -- Anchors and reject-time region marks. Separate from ducktape.ui's namespace so clearing progress
 -- text can never disturb an anchor.
 local ANCHOR = api.nvim_create_namespace("ducktape_inline_anchor")
-local CONTEXT_LINES = 40
 local seq = 0
 
 ---@type table<number, { requests: table<number, table>, diffs: table<number, table>, waiting: table<number, table>, augroup?: number, attached?: boolean, restoring?: boolean, pending?: boolean }>
@@ -254,27 +253,15 @@ end
 -- Prompt
 --=============================================================================
 
--- One contract for every transport. An earlier revision asked HTTP and relay for a
--- `{"code":"…"}` envelope instead; that is reverted, and deliberately not to be reintroduced.
--- Measured on ollama cloud with the same selection: under the envelope the model returned the
--- whole enclosing function — the <before> and <after> context included — while the plain
--- contract returned exactly the selected lines. It is also the workaround this rebuild set out
--- to delete (README → *The contract*), and no envelope survives a code fragment whose braces do
--- not balance, which is most fragments.
-local CONTRACT = [[
-You are an inline code editor inside Neovim. The editor decides where your output goes;
-you only supply code. Return ONLY the replacement text for the selected region.
-Reproduce every line you are not changing exactly as given. Do not add commentary.]]
-
-local NO_TOOLS = "You have no tools. Work only from the text below."
-local DEEP = [[
-You may read files in this repository to learn its conventions before answering.
-Do not modify any file: the editor applies your output, not you.]]
-
--- Only reachable through M.submit now: the keymaps send the cursor's line as the selection, so
--- there is no empty range to describe unless a caller asks for one.
-local INSERT = [[
-The selected region is empty. Return only the new code to insert at that point.]]
+-- The contract the model is held to, and the single biggest lever on what comes back — so it lives
+-- in config rather than here. `opts.inline.prompt` carries the shipped text and its reasoning.
+--
+-- `INSERT` is only reachable through M.submit: the keymaps send the cursor's line as the selection,
+-- so there is no empty range to describe unless a caller asks for one.
+---@return table
+local function prompts()
+	return require("ducktape.config").get().inline.prompt
+end
 
 ---@param bufnr number
 ---@param range table
@@ -295,17 +282,20 @@ end
 ---@param deep boolean
 ---@return { prompt: string, instruction: string, content: string, selection: string[] }
 local function build_prompt(bufnr, range, instruction, deep)
+	local cfg = require("ducktape.config").get().inline
+	local prompt = prompts()
+	local context_lines = cfg.context_lines
 	local total = api.nvim_buf_line_count(bufnr)
 	local filetype = vim.bo[bufnr].filetype
 	local path = vim.fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":.")
 
 	local selection = api.nvim_buf_get_lines(bufnr, range.s0, range.e0, false)
-	local before = api.nvim_buf_get_lines(bufnr, math.max(0, range.s0 - CONTEXT_LINES), range.s0, false)
-	local after = api.nvim_buf_get_lines(bufnr, range.e0, math.min(total, range.e0 + CONTEXT_LINES), false)
+	local before = api.nvim_buf_get_lines(bufnr, math.max(0, range.s0 - context_lines), range.s0, false)
+	local after = api.nvim_buf_get_lines(bufnr, range.e0, math.min(total, range.e0 + context_lines), false)
 
-	local head = { CONTRACT, deep and DEEP or NO_TOOLS }
+	local head = { prompt.contract, deep and prompt.deep or prompt.no_tools }
 	if not range.has_selection then
-		table.insert(head, INSERT)
+		table.insert(head, prompt.insert)
 	end
 
 	local content = {
@@ -327,7 +317,7 @@ local function build_prompt(bufnr, range, instruction, deep)
 		"</file>",
 	}
 
-	local diagnostics = diagnostics_for(bufnr, range)
+	local diagnostics = cfg.diagnostics and diagnostics_for(bufnr, range) or ""
 	if diagnostics ~= "" then
 		table.insert(content, "<diagnostics>")
 		table.insert(content, diagnostics)
