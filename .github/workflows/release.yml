@@ -2,6 +2,10 @@ name: Release
 
 # Conventional commits on main open a release PR; merging it tags vX.Y.Z. That tag is what
 # lazy.nvim's `version = "*"` and vim.pack's `vim.version.range()` resolve against.
+#
+# No `release-type` input on purpose: that would run the standalone releaser, which never reads
+# release-please-config.json. Without it the action runs manifest mode and picks up the config
+# and .release-please-manifest.json automatically.
 on:
   push:
     branches: [main]
@@ -15,5 +19,3 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: googleapis/release-please-action@v4
-        with:
-          release-type: simple

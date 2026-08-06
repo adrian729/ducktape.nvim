@@ -1,0 +1,16 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "ducktape.nvim",
+      "include-component-in-tag": false,
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "pkg.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    }
+  }
+}
