@@ -52,6 +52,8 @@ External programs, on the `PATH` of the shell that launches nvim:
 
 The provider rows are the three that ship. `:checkhealth ducktape` derives this list from whatever you have configured, so it stays right after you add a provider.
 
+`OLLAMA_API_KEY` is the default name, not a fixed one: `providers = { ollama = { endpoints = { cloud = { api_key_env = "MY_OTHER_VAR" } } } }` points the cloud endpoint at whatever variable you keep the key in instead, deep-merged over the shipped entry so its `url`, `adapter` and `tier` stay put.
+
 #### `opencode-llm` is not vendored
 
 OpenCode's tool-free inline path shells out to a program named `opencode-llm`. Ducktape does not ship it — the version this was extracted from is a script with a life of its own outside nvim, and two copies would drift. Anything meeting its contract can stand in:
