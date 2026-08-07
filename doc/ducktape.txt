@@ -1,5 +1,5 @@
 *ducktape.txt*
-                                 For NVIM v0.11    Last change: 2026 August 06
+                                 For NVIM v0.11    Last change: 2026 August 07
 
 ==============================================================================
 Table of Contents                                 *ducktape-table-of-contents*
@@ -95,8 +95,14 @@ External programs, on the `PATH` of the shell that launches nvim:
 The provider rows are the three that ship. `:checkhealth ducktape` derives this
 list from whatever you have configured, so it stays right after you add a
 provider. OpenCode’s tool-free inline path (`ci`) needs nothing beyond the
-`opencode` CLI itself — it composes `opencode run` directly and provisions its
-own agent definition, so there is nothing else to install or configure for it.
+`opencode` CLI itself — it composes `opencode run` directly and provisions
+its own agent definition, so there is nothing else to install or configure for
+it.
+
+`OLLAMA_API_KEY` is the default name, not a fixed one: `providers = { ollama =
+{ endpoints = { cloud = { api_key_env = "MY_OTHER_VAR" } } } }` points the
+cloud endpoint at whatever variable you keep the key in instead, deep-merged
+over the shipped entry so its `url`, `adapter` and `tier` stay put.
 
 
 INSTALLATION ~
@@ -1360,7 +1366,7 @@ so nothing reuses the old model), while a chat switch sets the default for
 **new** chats — a conversation already open keeps the model it was created
 with. `<leader>cs` is what reaches into a chat already in progress.
 
-Defaults: opencode's relay on `auto` (`opencode/deepseek-v4-flash-free`
+Defaults: opencode’s relay on `auto` (`opencode/deepseek-v4-flash-free`
 first), free, no local RAM — real-world latency on the free tier varies
 widely, from a couple of seconds to 20s+ depending on load. `ollama` is the
 other shipped default, `local` / `qwen3-coder:30b`: ~9-10s the first request
