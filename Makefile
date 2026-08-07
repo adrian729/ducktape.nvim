@@ -15,9 +15,12 @@ lint:
 fmt:
 	@stylua lua/ plugin/ tests/
 
+# LC_ALL=C: panvimdoc's Lua filter uppercases headings with string.upper, which is byte-based —
+# under a UTF-8 locale glibc's toupper() mangles multi-byte characters like em dashes one byte at
+# a time. The C locale's toupper() only touches ASCII, so UTF-8 sequences pass through untouched.
 doc: .deps/panvimdoc
 	@mkdir -p doc
-	@pandoc \
+	@LC_ALL=C pandoc \
 		--metadata="project:ducktape" \
 		--metadata="vimversion:NVIM v0.11" \
 		--metadata="titledatepattern:%Y %B %d" \

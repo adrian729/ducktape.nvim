@@ -51,6 +51,8 @@ External programs, on the `PATH` of the shell that launches nvim:
 
 The provider rows are the three that ship. `:checkhealth ducktape` derives this list from whatever you have configured, so it stays right after you add a provider. OpenCode's tool-free inline path (`ci`) needs nothing beyond the `opencode` CLI itself — it composes `opencode run` directly and provisions its own agent definition, so there is nothing else to install or configure for it.
 
+`OLLAMA_API_KEY` is the default name, not a fixed one: `providers = { ollama = { endpoints = { cloud = { api_key_env = "MY_OTHER_VAR" } } } }` points the cloud endpoint at whatever variable you keep the key in instead, deep-merged over the shipped entry so its `url`, `adapter` and `tier` stay put.
+
 ### Installation
 
 Ducktape and codecompanion are **two sibling entries**, not a dependency chain. Ducktape has to be a start plugin so its keymaps and statusline segment exist from the first redraw; codecompanion stays deferred and is pulled in by your first ducktape action.
