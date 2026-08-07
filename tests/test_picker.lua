@@ -88,8 +88,11 @@ for _, scope in ipairs({ "chat", "inline" }) do
 		ok(entry.display == nil, label .. " does not carry a display closure", vim.inspect(entry))
 		for j, hl in ipairs(entry.highlights) do
 			ok(
-				type(hl) == "table" and type(hl[1]) == "table" and type(hl[1][1]) == "number"
-					and type(hl[1][2]) == "number" and type(hl[2]) == "string",
+				type(hl) == "table"
+					and type(hl[1]) == "table"
+					and type(hl[1][1]) == "number"
+					and type(hl[1][2]) == "number"
+					and type(hl[2]) == "string",
 				("%s highlight %d has the { {start, finish}, group } shape"):format(label, j)
 			)
 		end
@@ -110,9 +113,11 @@ do
 		entries = function()
 			return { { value = 1, text = "one", highlights = {}, ordinal = "one" } }
 		end,
-		actions = { delete = function(e)
-			table.insert(calls, e)
-		end },
+		actions = {
+			delete = function(e)
+				table.insert(calls, e)
+			end,
+		},
 	})
 	ok(ok_open and type(handle) == "table", "a spec without panel opens", handle)
 	for _, action in ipairs({ "delete", "rename", "kill", "help" }) do
@@ -220,14 +225,22 @@ end
 vim.cmd("call feedkeys(\"\\<C-d>\", 'xt')")
 vim.wait(50)
 ok(actions_hit ~= nil, "<C-d> fires the panel action", actions_hit and vim.inspect(actions_hit.value))
-ok(actions_hit and actions_hit.value == "delta", "with the selected entry", actions_hit and vim.inspect(actions_hit.value))
+ok(
+	actions_hit and actions_hit.value == "delta",
+	"with the selected entry",
+	actions_hit and vim.inspect(actions_hit.value)
+)
 ok(type(ctx_close) == "function", "and a working close in the context")
 ok(handle.is_open(), "and the picker stays up for the action to answer")
 
 vim.cmd("call feedkeys(\"\\<CR>\", 'xt')")
 vim.wait(50)
 ok(selected ~= nil, "<CR> selects", selected and vim.inspect(selected.value))
-ok(selected and selected.value == "delta", "and hands over the entry at the cursor", selected and vim.inspect(selected.value))
+ok(
+	selected and selected.value == "delta",
+	"and hands over the entry at the cursor",
+	selected and vim.inspect(selected.value)
+)
 ok(not handle.is_open(), "selecting closes the picker")
 
 handle.close()
@@ -245,8 +258,20 @@ do
 	-- exactly the seam a unit suite must take, and everything downstream is then exercised
 	-- for real.
 	require("ducktape.chat_list")._cached_sessions = {
-		{ sessionId = "s1", title = "Alpha session", updatedAt = "2020-01-01T10:00:00Z", cwd = "/", provider = "claude" },
-		{ sessionId = "s2", title = "Beta session", updatedAt = "2020-01-01T11:00:00Z", cwd = "/", provider = "claude" },
+		{
+			sessionId = "s1",
+			title = "Alpha session",
+			updatedAt = "2020-01-01T10:00:00Z",
+			cwd = "/",
+			provider = "claude",
+		},
+		{
+			sessionId = "s2",
+			title = "Beta session",
+			updatedAt = "2020-01-01T11:00:00Z",
+			cwd = "/",
+			provider = "claude",
+		},
 	}
 	local ok_open, err_open = pcall(require("ducktape.chat_list").open)
 	ok(ok_open and err_open == nil, "chat list opens on the built-in backend", err_open)
