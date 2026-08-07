@@ -125,8 +125,10 @@ local BINARIES = {
 
 ---The external programs the configured providers need, one entry per provider.
 ---
----Derived rather than listed: a provider added through config brings its own agent command and its
----own relay, and a fixed list could only ever report on the three that ship.
+---Derived rather than listed: a provider added through config brings its own agent command, and a
+---fixed list could only ever report on the three that ship. The relay itself names nothing here —
+---it is native to `inline/relay.lua` and runs on the same `opencode` binary the ACP adapter below
+---already reports.
 ---@return table[]
 local function provider_binaries()
 	local providers = require("ducktape.providers")
@@ -149,18 +151,6 @@ local function provider_binaries()
 					optional = true,
 				})
 			end
-		end
-
-		-- The relay, which is deliberately not vendored.
-		local relay = providers.relay(provider)
-		if relay and relay.cmd then
-			table.insert(out, {
-				name = relay.cmd,
-				used_for = ("%s's tool-free inline path"):format(provider),
-				optional = true,
-				note = "not bundled: any program taking content on stdin, the request as arguments and "
-					.. "answering on stdout will do. Other providers are unaffected.",
-			})
 		end
 
 		-- A model list that is a subprocess names its own command.

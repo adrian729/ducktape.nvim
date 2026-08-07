@@ -1371,7 +1371,7 @@ function M.submit(opts)
 		or "ducktape.inline.acp"
 
 	-- Registered before the send, not after. A transport can fail synchronously — no
-	-- `opencode-llm` on PATH, an adapter that will not resolve — and its on_error runs inside
+	-- `opencode` on PATH, an adapter that will not resolve — and its on_error runs inside
 	-- send(); registering afterwards would put an already-dead request into the buffer's registry
 	-- with nothing left to clear it, so `<leader>cx` would keep reporting a phantom in flight.
 	buf_state(bufnr).requests[req.id] = req

@@ -280,25 +280,17 @@ M.providers = {
 				.. "default — :Ducktape models asks opencode what it can reach",
 		},
 		-- The tool-free relay, used for shallow inline. Guaranteed no repo access, free model.
-		-- We shell out rather than composing `opencode run` ourselves because the script already
-		-- owns the free-model fallback walk, the neutral cwd, the portable timeout wrapper and
-		-- --format json parsing — and its contract is exactly what inline needs.
+		-- Native to `inline/relay.lua`, not a shelled-out script: it composes `opencode run`
+		-- itself, walking `auto.prefer` (below) until one model answers. That also means no `jq`,
+		-- and no dependency on anything in the user's own opencode config — the agent it runs
+		-- under is self-provisioned into a project-local opencode.json ducktape owns, so a
+		-- colleague with a bare `opencode` install gets the same tool-free path unmodified.
 		--
 		-- Why this and not ACP for shallow inline: `opencode acp` has no --agent flag, and denying
 		-- a tool the model wants stops the execution but not the attempt, so tool-call markup leaks
 		-- into the reply as text. The relay pairs the same deny set with a prompt telling the model
 		-- it has no tools, which stops the attempt at source.
-		relay = {
-			cmd = "opencode-llm",
-			exits = {
-				[1] = "usage error",
-				[2] = "empty prompt and empty input",
-				[3] = "opencode or jq is not installed",
-				[5] = "no free relay model available",
-				[6] = "the provider returned an API error",
-				[124] = "timed out",
-			},
-		},
+		relay = true,
 		transports = { shallow = "relay", deep = "acp" },
 		-- Derived rather than named: opencode's write defence is the OPENCODE_PERMISSION deny set
 		-- below, which is a request and not something a session reports back. `M.SAFE_MODES` finds
@@ -349,12 +341,16 @@ M.providers = {
 	},
 }
 
--- Free-first by policy. Inline defaults to the fastest measured free backend.
+-- Free-first by policy. Inline defaults to opencode's relay, model left on `AUTO` rather than
+-- pinned: `auto.prefer` above already puts `opencode/deepseek-v4-flash-free` first, so a fresh
+-- install gets exactly that model on the first request — but pinning would throw away the walk
+-- that lets the relay degrade onto the next preferred model if this one is ever renamed or
+-- retired, which is a real risk for a free-tier name and not one worth taking for no latency gain.
 M.defaults = {
 	inline = {
-		provider = "ollama",
+		provider = "opencode",
 		opts = {
-			ollama = { endpoint = "cloud", model = "gpt-oss:120b", think = "off" },
+			ollama = { endpoint = "local", model = "qwen3-coder:30b", think = "off" },
 			claude = { model = "sonnet", effort = "medium" },
 			opencode = { model = M.AUTO },
 		},
@@ -634,25 +630,38 @@ local function from_config(provider, ...)
 	return vim.tbl_get(cfg, "providers", provider, ...)
 end
 
----The relay definition for a provider, with the configured command substituted in.
+---Whether a provider has a tool-free relay transport at all.
 ---@param provider string
----@return table|nil
+---@return true|nil
 function M.relay(provider)
 	local spec = M.spec(provider)
 	if not spec or not spec.relay then
 		return nil
 	end
-	local relay = vim.deepcopy(spec.relay)
-	relay.cmd = from_config(provider, "relay", "cmd") or relay.cmd
-	return relay
+	return true
 end
 
----The command backing a provider's tool-free relay transport, if it has one.
+---The ordered, free-tier model list a provider's relay walks when no model is pinned.
+---
+---Reuses `auto.prefer` (and its config override) rather than a second list: the relay's fallback
+---order and AUTO's live-session pin are the same preference, just consumed differently — the
+---relay tries each in turn until one answers, a live session pins the first one `M.models` still
+---offers.
 ---@param provider string
----@return string|nil
-function M.relay_cmd(provider)
-	local relay = M.relay(provider)
-	return relay and relay.cmd or nil
+---@return string[]
+function M.relay_models(provider)
+	local spec = M.spec(provider) or {}
+	local auto = spec.auto or {}
+	local eligible = auto.eligible or function()
+		return true
+	end
+	local out = {}
+	for _, model in ipairs(from_config(provider, "auto", "prefer") or auto.prefer or {}) do
+		if eligible(model) then
+			table.insert(out, model)
+		end
+	end
+	return out
 end
 
 ---The codecompanion adapter name backing a provider, for a scope.

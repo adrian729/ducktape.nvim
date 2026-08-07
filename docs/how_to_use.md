@@ -20,7 +20,7 @@ You can have several inline requests in flight in the same buffer at once. Each 
 While a request runs, the lines it was given get a cool mauve tint, and a spinner line sits directly above them showing the provider, model, your instruction, and how many lines are in play:
 
 ```
-    ⠋ ollama · gpt-oss:120b · return 2 instead · 3 lines
+    ⠋ opencode · auto · return 2 instead · 3 lines
     local function f()
       return 1
     end
@@ -113,9 +113,9 @@ Press `<leader>cL`. One row per inline edit that has not been settled: requests 
 
 ```
 ┌ Inline — 2 thinking · 1 to review · 1 to read ──────────────────────────────────────────┐
-│▶ ◆ review        0s  ollama · gpt-oss:120b  lua/parser/tokenize.lua:4  make this a s…  │
-│  ⠋ thinking     12s  ollama · gpt-oss:120b  lua/app/cli.lua:2          add a b key s…  │
-│  ◆ answered     31s  ollama · gpt-oss:120b  lua/app/status.lua:8       why is this s…  │
+│▶ ◆ review        0s  opencode · auto        lua/parser/tokenize.lua:4  make this a s…  │
+│  ⠋ thinking     12s  opencode · auto        lua/app/cli.lua:2          add a b key s…  │
+│  ◆ answered     31s  opencode · auto        lua/app/status.lua:8       why is this s…  │
 │  ⠋ thinking      4s  claude · sonnet        lua/app/net.lua:2          explain the r…  │
 └──────────────── a accept · r again · x discard · ? keys ────────────────────────────────┘
 ```
@@ -170,8 +170,8 @@ Press `<leader>cmi`. One flat Telescope list of every provider/model pair, so fi
 
 - **ollama** — contributes one row per endpoint, listed as `ollama cloud` and `ollama local`, because the endpoint decides which models you get. Both lists are fetched from the ollama API and cached for the session
 - **claude** — runs over ACP. The session runs in `dontAsk` mode, which denies mutating tools
-- **opencode** — every model this machine can reach, asked of `opencode models` itself: the free tier (`opencode/…`) and the Go subscription (`opencode-go/…`). Free models are listed first, so the cheap option is the one under the cursor. For `ci` opencode runs through the `opencode-llm` relay (no tools at all); for `cI` over ACP with repo-read permission but mutation denied
-  - `auto` is a sentinel rather than a model: it lets `opencode-llm` walk its own free fallback list, so a dead model degrades instead of failing. When a live session needs a real model pinned, `auto` always resolves to a **free** one — never to a Go model you did not pick
+- **opencode** — every model this machine can reach, asked of `opencode models` itself: the free tier (`opencode/…`) and the Go subscription (`opencode-go/…`). Free models are listed first, so the cheap option is the one under the cursor. For `ci` opencode runs through ducktape's own native relay (no tools at all, no external command); for `cI` over ACP with repo-read permission but mutation denied
+  - `auto` is a sentinel rather than a model: it lets the relay walk its own free fallback list, so a dead model degrades instead of failing. When a live session needs a real model pinned, `auto` always resolves to a **free** one — never to a Go model you did not pick
   - `ollama-cloud/…` models are reachable through opencode too, but they are left out here because the `ollama` provider already offers them; listing them under two providers would only raise the question of which to use
 
 **Every row says what it draws on.** The labels are not decoration — nothing in these model names tells you whether picking one consumes a usage budget or nothing at all:
@@ -214,7 +214,7 @@ Claude's `agent` is not offered here at all, because the list of agents only exi
 
 `<leader>cmc` is the same list for chat. One difference worth knowing: an inline switch takes effect on the next request (the connection pool is drained so nothing reuses the old model), while a chat switch sets the default for **new** chats — a conversation already open keeps the model it was created with. `<leader>cs` is what reaches into a chat already in progress.
 
-Defaults: ollama cloud with `gpt-oss:120b` — measured ~4s on a typical refactor, no local RAM cost, free.
+Defaults: opencode's relay on `auto` (`opencode/deepseek-v4-flash-free` first), free, no local RAM — real-world latency on the free tier varies widely, from a couple of seconds to 20s+ depending on load. `ollama` is the other shipped default, `local` / `qwen3-coder:30b`: ~9-10s the first request after a restart (loading the model), ~0.4s warm since `keep_alive` keeps it resident.
 
 **When the model declines:**
 

@@ -68,8 +68,10 @@ CodeCompanion's ACP **client** (`acp/init.lua`, `acp/prompt_builder.lua`, etc.) 
 - **What keeps its inline path from writing** — `guard`, see *Write safety*
 
 Defaults are free-first by policy:
-- Inline: ollama cloud `gpt-oss:120b` — ~4s, free, no local RAM
+- Inline: opencode's relay on `AUTO` — `opencode/deepseek-v4-flash-free` first, free, no local RAM. Measured latency on a small edit varies widely with the free tier's own load: seconds when a preferred model is healthy, 20s+ or a timeout when it is not — which is the whole reason the fallback walk exists rather than a single pinned model
 - Chat: claude `opus`, effort `xhigh`, mode `default` — the agent asks before it writes, and CodeCompanion answers with a diff of the proposed change
+
+`ollama` ships too, defaulted to `local` / `qwen3-coder:30b` for inline (unused unless picked): ~9-10s the first time a request loads the model, ~0.4s warm — codecompanion's `keep_alive = "30m"` keeps it resident, so only the very first request after a restart pays the load.
 
 Model lists are discovered by asking each provider, cached for the session, and written to `stdpath("state")/ducktape/models.json` so the next start has them without asking again. Setup kicks that discovery off itself when the file does not exist yet, so a first run is already populated rather than filling once a picker is opened. `:Ducktape models` (`<leader>cmr`) throws the file away and re-asks — the only thing that notices a model added since. Nothing is shipped as a hardcoded list, which is what makes the plugin work on a machine that is not its author's:
 - Ollama local: `curl localhost:11434/api/tags`
@@ -118,13 +120,13 @@ Four transports back the same prompt contract. Which one is used depends on the 
 |---|---|---|
 | ollama | HTTP (curl) | n/a — refused with a message to switch provider |
 | claude | ACP | ACP (same adapter, different prompt) |
-| opencode | relay (`opencode-llm`) | ACP |
+| opencode | relay (native `opencode run`) | ACP |
 
 **HTTP (`inline/http.lua`)**: plain curl through CodeCompanion's HTTP client. Ollama cloud supports streaming, local does as well. The cloud endpoint is `https://ollama.com/api/chat` with `OLLAMA_API_KEY` as a bearer token. Local is `http://localhost:11434`. The `num_ctx = 16384` default is explicitly set — ollama's own default is small enough to silently truncate a real refactor. `keep_alive = "30m"` keeps the local model warm between calls.
 
 The HTTP client has a double-callback bug on 4xx: it invokes the callback once with the error body as though it were a reply, then again with an error table. The transport checks `data.status >= 400` before handing anything to the adapter's parser.
 
-**Relay (`inline/relay.lua`)**: shells out to `opencode-llm`, which runs a free-tier cloud model with no tools in a neutral cwd not on this repo. Guaranteed tool-free by construction — the model cannot read files, cannot write, and cannot run commands. The relay is only available for `ci` because `cI` needs the ability to read the repo, which the relay structurally cannot provide. Latency is ~9s for a small edit.
+**Relay (`inline/relay.lua`)**: composes `opencode run -m <model> --agent ducktape-relay --dir <state-dir> --format json` directly — no external command. The `ducktape-relay` agent (every tool denied) lives in a project-local `opencode.json` the module writes into its own directory under `stdpath("state")`, so this never reads or depends on the user's own `~/.config/opencode` — a colleague with a bare `opencode` install gets the same path with nothing to set up. It walks `providers.opencode.auto.prefer` (the same free-model preference list AUTO resolves against for a live session) until one model answers, unless a model is pinned, in which case a failure is terminal rather than walked past. Guaranteed tool-free by construction — the model cannot read files, cannot write, and cannot run commands. The relay is only available for `ci` because `cI` needs the ability to read the repo, which the relay structurally cannot provide. Latency on a small edit is real-world variable — anywhere from ~2s to 20s+ measured on the same free-tier model minutes apart. A model that stalls mid-request times out rather than degrading (terminal, not walked past — see above); the fallback walk absorbs that variance across separate requests, not within one that is already running.
 
 **ACP (`inline/acp.lua`)**: claude and opencode over ACP sessions from the connection pool. `ci` and `cI` differ only in prompt text — same adapter, same pool, same mode. `ci` gets "You have no tools. Work only from the text below." `cI` gets "You may read files in this repository to learn its conventions before answering. Do not modify any file: the editor applies your output, not you."
 

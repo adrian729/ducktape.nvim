@@ -371,12 +371,11 @@ The selected region is empty. Return only the new code to insert at that point.]
 		label = "AI",
 	},
 
-	-- Deprecated. `relay` and `prefer` moved onto the opencode provider spec, so everything about
-	-- a provider is in one place and a second relay-backed provider has somewhere to go. Both are
-	-- still honoured, and win over the spec when set, so an existing config keeps working.
-	--   opts.opencode.relay.cmd  →  opts.providers.opencode.relay.cmd
-	--   opts.opencode.prefer     →  opts.providers.opencode.auto.prefer
-	opencode = { relay = {}, prefer = nil },
+	-- Deprecated. `prefer` moved onto the opencode provider spec, so everything about a provider
+	-- is in one place. Still honoured, and wins over the spec when set, so an existing config
+	-- keeps working.
+	--   opts.opencode.prefer  →  opts.providers.opencode.auto.prefer
+	opencode = { prefer = nil },
 
 	-- Passed to codecompanion.setup() only on the standalone path, where this plugin sets
 	-- codecompanion up itself. Ignored when loaded as an extension, since codecompanion has by
@@ -408,9 +407,6 @@ end
 local function migrate_opencode(cfg)
 	local legacy = cfg.opencode or {}
 	local moved = {}
-	if legacy.relay and legacy.relay.cmd then
-		moved.relay = { cmd = legacy.relay.cmd }
-	end
 	if legacy.prefer then
 		moved.auto = { prefer = legacy.prefer }
 	end

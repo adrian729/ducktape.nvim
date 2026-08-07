@@ -216,9 +216,6 @@ eq(
 	vim.tbl_get(config.get(), "providers", "opencode", "auto", "prefer", 1),
 	"opencode/somewhere"
 )
-config.setup({ opencode = { relay = { cmd = "my-relay" } } })
-eq("and so is the relay command", providers.relay_cmd("opencode"), "my-relay")
-
 section("a bad `defaults.provider` is caught rather than left to fail later")
 config.setup({ defaults = { inline = { provider = "nope" } } })
 providers.apply(config.get())

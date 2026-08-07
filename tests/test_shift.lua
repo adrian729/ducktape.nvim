@@ -36,6 +36,9 @@ package.loaded["ducktape.inline.http"] = {
 
 local api = vim.api
 local inline = require("ducktape.inline")
+-- This suite stubs `ducktape.inline.http`, which only the ollama provider routes through — pinned
+-- explicitly rather than relying on the shipped default, which is opencode's relay.
+require("ducktape.providers").set_provider("inline", "ollama")
 
 local notes = {}
 require("ducktape.ui").say = function(msg)

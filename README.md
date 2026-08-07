@@ -7,7 +7,7 @@ Inline AI editing and chat sessions on top of [codecompanion.nvim](https://githu
 `ducktape.nvim` is a layer that makes a working day out of codecompanion's adapters. Several inline edits in flight at once without stepping on each other, chats that survive an nvim restart with nothing respawned until you open one, and inline requests that cannot write to your filesystem — whatever provider is behind them.
 
 ```
-    ⠋ ollama · gpt-oss:120b · return 2 instead · 3 lines
+    ⠋ opencode · auto · return 2 instead · 3 lines
     local function f()
       return 1
     end
@@ -48,18 +48,8 @@ External programs, on the `PATH` of the shell that launches nvim:
 | `curl` + `$OLLAMA_API_KEY` | Ollama's cloud endpoint |
 | a running `ollama` | Ollama's local endpoint only |
 | `git` | scoping saved chats and resumable sessions to the repository — degrades to "no resumable sessions", or set `opts.session.scope` |
-| `opencode-llm` + `jq` | the tool-free OpenCode inline path only, and **not bundled** — see below |
 
-The provider rows are the three that ship. `:checkhealth ducktape` derives this list from whatever you have configured, so it stays right after you add a provider.
-
-#### `opencode-llm` is not vendored
-
-OpenCode's tool-free inline path shells out to a program named `opencode-llm`. Ducktape does not ship it — the version this was extracted from is a script with a life of its own outside nvim, and two copies would drift. Anything meeting its contract can stand in:
-
-- content on **stdin**, the request as **arguments**, the answer on **stdout**
-- exit codes: `1` usage, `2` empty input, `3` a missing prerequisite, `5` no model available, `6` API error, `124` timeout
-
-Point ducktape at yours with `opts.providers.opencode.relay.cmd`. Without it, that one path reports `opencode-llm is not on PATH` and the Claude and Ollama providers are unaffected.
+The provider rows are the three that ship. `:checkhealth ducktape` derives this list from whatever you have configured, so it stays right after you add a provider. OpenCode's tool-free inline path (`ci`) needs nothing beyond the `opencode` CLI itself — it composes `opencode run` directly and provisions its own agent definition, so there is nothing else to install or configure for it.
 
 ### Installation
 
@@ -202,9 +192,9 @@ opts = {
   -- The current selection, per interaction and per provider.
   defaults = {
     inline = {
-      provider = "ollama",
+      provider = "opencode",
       opts = {
-        ollama = { endpoint = "cloud", model = "gpt-oss:120b", think = "off" },
+        ollama = { endpoint = "local", model = "qwen3-coder:30b", think = "off" },
         claude = { model = "sonnet", effort = "medium" },
         opencode = { model = "auto" },
       },
