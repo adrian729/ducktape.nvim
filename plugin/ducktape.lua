@@ -20,6 +20,9 @@ local actions = {
 	chat_toggle = function()
 		require("ducktape.chat").toggle()
 	end,
+	chat_focus = function()
+		require("ducktape.chat_window").focus()
+	end,
 	chat_new = function()
 		require("ducktape.chat").new()
 	end,

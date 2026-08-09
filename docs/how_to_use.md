@@ -235,6 +235,32 @@ Chat is a full conversation buffer where you can talk to a model, invoke tools, 
 - `<leader>cd` — delete the current chat *and* the agent's saved transcript of it (asks `y`/`n` first, defaulting to no; cannot be undone)
 - `<leader>cl` — open the chat list (Telescope picker, see below)
 
+**Getting in and out of the chat window:**
+
+The chat is a plain vertical split, so all of nvim's own window motions work in it: `<C-w>h` and `<C-w>l` move left and right, `<C-w>w` cycles, and `<C-w>p` goes back to the window you came from.
+
+`<leader>cf` is the shorter route, and does one thing those cannot: it works whether or not the chat is on screen. From a file it opens the chat if it was hidden and puts the cursor in it; from the chat it takes you back to the file you were editing. `<leader>cc` remains show/hide — `<leader>cf` never puts the chat away, so the key that means "take me there" cannot mean "get rid of it" depending on which window happened to be focused.
+
+**The chat closes with your files:**
+
+The chat is a sidecar to the file it was opened next to, and it is treated as one. Nvim does not know that on its own — to nvim the chat window is an ordinary window — so two rules are added:
+
+- Closing the last file window takes the chat with it, which quits the session. Without this you are left with a session that is nothing but chat, and that chat cannot even be toggled away: hiding the last window is `E444`.
+- `:q` in the chat quits the session too, the same as `:q` in the last file window would. Putting the chat away without quitting is what `<leader>cc` is for, so `:q` is free to mean what it says everywhere else.
+
+Tabs are handled locally: if a tab is left holding only the chat while another tab still has files open, that chat is hidden and the tab closes, rather than the whole session going down. The chat buffer survives either way — `<leader>cc` brings it back with its conversation intact.
+
+Both rules are switchable:
+
+```lua
+vim.g.ducktape = {
+  chat = {
+    close_with_last_file = false,  -- the chat outlives your last file
+    quit_closes_session = false,   -- `:q` in the chat closes only the chat window
+  },
+}
+```
+
 **Switching chat provider or model:**
 
 Press `<leader>cmc` — the same flat list described under [Switching provider or model](#switching-provider-or-model), for the chat scope. It sets the default for new chats; `<leader>cs` changes a chat already open. Defaults: claude with opus + xhigh effort + `default` mode, which is the mode that asks before editing.

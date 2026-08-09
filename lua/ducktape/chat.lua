@@ -624,6 +624,20 @@ function M.toggle()
 		end
 		return M.new()
 	end
+	-- Toggling off is `:hide`, and `:hide` on the last window is E444 rather than a no-op. Reached
+	-- when the chat has been left alone deliberately (`:only`, or `chat.close_with_last_file` set
+	-- to false), since a file window closing otherwise takes the chat with it.
+	if
+		chat.ui
+		and chat.ui:is_visible()
+		and chat.ui.winnr
+		and require("ducktape.chat_window").is_last_window(chat.ui.winnr)
+	then
+		return ui.say(
+			"[ducktape] the chat is the only window — there is nothing to toggle back to. Open a file, or `:q` to quit.",
+			vim.log.levels.WARN
+		)
+	end
 	-- The plugin's toggle acts on its own last_chat, which is nil for a restored
 	-- chat — it would create a brand-new chat and shadow the restored one. Open the
 	-- chat we found directly; entering the buffer sets last_chat, so subsequent
@@ -636,6 +650,27 @@ function M.toggle()
 		return
 	end
 	vim.cmd("CodeCompanionChat Toggle")
+end
+
+---Put the cursor in the chat, opening it first if it was hidden. Never hides — that is what
+---`M.toggle` is for, and a key that means "take me there" must not mean "put it away" depending on
+---which window happened to be focused.
+function M.focus()
+	local chat = newest_chat()
+	if not chat then
+		-- Nothing live: reviving a pending chat or starting a fresh one is what toggle already
+		-- decides between, and the answer does not change here.
+		return M.toggle()
+	end
+	if not chat.ui then
+		return ui.say("[ducktape] the last chat has no window to focus", vim.log.levels.WARN)
+	end
+	if not chat.ui:is_visible() then
+		chat.ui:open()
+	end
+	if chat.ui.winnr and api.nvim_win_is_valid(chat.ui.winnr) then
+		pcall(api.nvim_set_current_win, chat.ui.winnr)
+	end
 end
 
 ---Start a new chat with the current provider and its preset options.

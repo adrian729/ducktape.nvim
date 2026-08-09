@@ -34,6 +34,7 @@ local config = require("ducktape.config")
 section("every shipped key is what it was")
 local shipped = {
 	chat_toggle = "<leader>cc",
+	chat_focus = "<leader>cf",
 	chat_new = "<leader>cn",
 	chat_close_all = "<leader>cq",
 	chat_rename = "<leader>cr",
@@ -60,11 +61,11 @@ for action, lhs in pairs(shipped) do
 	eq(action, keys.lhs(action), lhs)
 end
 
-section("all 18 global actions are present, and the diff keys are not among them")
+section("all 19 global actions are present, and the diff keys are not among them")
 -- 17 of them are the set extracted from the original config; models_refresh is the one addition,
 -- and it is here so a rename or a dropped entry fails rather than going unnoticed.
 local globals = keys.global_actions()
-eq("18 global actions", #globals, 18)
+eq("19 global actions", #globals, 19)
 ok(vim.tbl_contains(globals, "models_refresh"), "refreshing the model lists has a key of its own")
 ok(
 	not vim.tbl_contains(globals, "diff_accept") and not vim.tbl_contains(globals, "diff_next_hunk"),

@@ -18,6 +18,9 @@ Extension.exports = {
 	toggle_chat = function(...)
 		return require("ducktape.chat").toggle(...)
 	end,
+	focus_chat = function(...)
+		return require("ducktape.chat_window").focus(...)
+	end,
 	new_chat = function(...)
 		return require("ducktape.chat").new(...)
 	end,

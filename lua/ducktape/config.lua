@@ -246,6 +246,20 @@ The selected region is empty. Return only the new code to insert at that point.]
 		highlights = {},
 	},
 
+	-- The chat as a window. It is a sidecar to the file it was opened next to, and nvim has no way
+	-- to know that: to it the chat window is an ordinary window, so closing the file leaves a
+	-- session that is nothing but chat — one that cannot even be toggled away, because the hide
+	-- codecompanion does it with is E444 on the last window.
+	chat = {
+		-- Closing the last file window takes the chat with it, which quits the session. A tab that
+		-- empties this way has its chat hidden instead, when other tabs still hold files.
+		close_with_last_file = true,
+		-- `:q` in the chat quits the session, the same as `:q` in the last file window. Putting the
+		-- chat away without quitting is what `<leader>cc` is for, so `:q` is free to mean what it
+		-- says. Set false to have `:q` close only the chat window.
+		quit_closes_session = true,
+	},
+
 	-- What counts as "this project". Two settings, because the two things being scoped want
 	-- different answers and always have — collapsing them onto one would silently move somebody's
 	-- saved chats.
@@ -275,6 +289,7 @@ The selected region is empty. Return only the new code to insert at that point.]
 	keymaps = {
 		globals = true,
 		chat_toggle = { "<leader>cc", mode = { "n" }, desc = "AI: toggle last chat" },
+		chat_focus = { "<leader>cf", mode = { "n" }, desc = "AI: jump between the chat and the file" },
 		chat_new = { "<leader>cn", mode = { "n", "x" }, desc = "AI: new chat (current provider + options)" },
 		chat_close_all = { "<leader>cq", mode = { "n" }, desc = "AI: close all chats" },
 		chat_rename = { "<leader>cr", mode = { "n" }, desc = "AI: rename current chat" },

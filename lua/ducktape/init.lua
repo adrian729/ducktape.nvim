@@ -158,6 +158,10 @@ function M.setup(opts)
 	-- reads back the ones from last session. Nothing is respawned here — a saved chat becomes a
 	-- real one only when the user opens it, which is why an nvim start costs no agent processes.
 	require("ducktape.chat")
+	-- The chat's lifetime rules: closing the last file takes the chat with it, and `:q` in the chat
+	-- quits. Registered here rather than at that module's load so a session that never set the
+	-- plugin up keeps nvim's own window behaviour.
+	require("ducktape.chat_window").setup()
 
 	ready = true
 	return cfg

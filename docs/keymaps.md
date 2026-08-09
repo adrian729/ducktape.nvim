@@ -5,12 +5,13 @@ global set is configurable — see [Configuration](#configuration) at the bottom
 
 ## Global — ducktape
 
-All 18 of them. Each also has a `<Plug>(Ducktape…)` mapping, so you can bind your own key without
+All 19 of them. Each also has a `<Plug>(Ducktape…)` mapping, so you can bind your own key without
 touching the config.
 
 | Key | Modes | Action | `<Plug>` name |
 |---|---|---|---|
 | `<leader>cc` | n | Toggle the last chat, reopening it after a restart | `<Plug>(DucktapeChatToggle)` |
+| `<leader>cf` | n | Jump between the chat and the file — opens the chat if it is hidden | `<Plug>(DucktapeChatFocus)` |
 | `<leader>cn` | n, x | New chat on the current provider and options | `<Plug>(DucktapeChatNew)` |
 | `<leader>cq` | n | Close every chat | `<Plug>(DucktapeChatCloseAll)` |
 | `<leader>cr` | n | Rename the current chat | `<Plug>(DucktapeChatRename)` |
@@ -154,7 +155,7 @@ The `<Plug>` maps and the buffer-local diff keys are unaffected either way, and 
 names a key still names the right one.
 
 A default is skipped when you have already bound that action to a key of your own, or when the key
-it wants is already taken. Your mapping wins in both cases; the other 17 still appear.
+it wants is already taken. Your mapping wins in both cases; the other 18 still appear.
 
 ### Keys inside ducktape's own windows
 

@@ -115,6 +115,8 @@ While a diff is up, `g2` accepts and `g3` rejects it; the banner above names the
 
 Provider, model, effort, mode and agent are per chat. Editing a message you already sent and asking again forks a fresh agent session carrying your edited transcript.
 
+`<leader>cf` jumps between the chat and the file, opening the chat first if it was hidden — `<C-w>h` / `<C-w>l` / `<C-w>p` work too, since the chat is a plain split. The chat is a sidecar to your files rather than a window in its own right: closing the last file window takes it with you, and `:q` in the chat quits the session, both switchable under `chat` in the config.
+
 ### Providers and models
 
 One option UX across every provider you configure. `<leader>cmi` switches the inline backend and model, `<leader>cmc` the chat's. A label at the point of choice says what a model draws on — free · cloud, subscription · claude.
@@ -127,11 +129,12 @@ Model lists discover themselves — see [Model lists discover themselves](#model
 
 ## Default Mappings
 
-The 18 global keymaps. Each also has a `<Plug>(Ducktape…)` mapping, so you can bind your own key without touching the config; per-action overrides use the `<Plug>` names lowercased with underscores — see [Configuration](#configuration).
+The 19 global keymaps. Each also has a `<Plug>(Ducktape…)` mapping, so you can bind your own key without touching the config; per-action overrides use the `<Plug>` names lowercased with underscores — see [Configuration](#configuration).
 
 | Mappings | Action |
 |---|---|
 | `<leader>cc` | Toggle the last chat, reopening it after a restart |
+| `<leader>cf` | Jump between the chat and the file — opens the chat if it is hidden |
 | `<leader>cn` | New chat on the current provider and options |
 | `<leader>cq` | Close every chat |
 | `<leader>cr` | Rename the current chat |

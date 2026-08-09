@@ -31,6 +31,7 @@ lua/ducktape/
   statusline.lua      the one always-visible count of what inline has in play
   chat.lua            new chat with preset options, toggle, close-all, adapter resolution
   chat_edit.lua       what <CR> does in a chat: fixes the parse boundary, carries an edited history
+  chat_window.lua     the chat's lifetime as a window: dies with your last file, `:q` quits
   chat_list.lua       live chats + resumable sessions from outside nvim, through ducktape.picker
   picker/
     init.lua          one list-picking interface, several backends; opts.ui.picker chooses
@@ -243,6 +244,17 @@ They are now a third entry kind (`prose`/`failed`) in the registry's `waiting` t
 - **`open_with_context()`**: the prose-float upgrade. When inline declines an edit, the float's `<CR>` passes the instruction, selection and model reply through to `open_with_context`, which creates a chat pre-loaded with those messages. The user continues the conversation where inline left off
 
 Claude's `agent` option has `category = nil` in the ACP schema, so it cannot be set via `session_config_options` and must be applied after the session exists via `conn:set_config_option`. `chat.lua` stashes the agent name per-buffer and applies it on the first `CodeCompanionChatSubmitted` event, which fires after the session is live.
+
+## The chat's lifetime as a window (`chat_window.lua`)
+
+To nvim the chat is an ordinary window, so closing the file it was opened next to leaves a session that is nothing but chat — and that chat cannot be toggled away, because codecompanion hides it with `:hide` (`interactions/shared/ui.lua`) and `:hide` on the last window is `E444`. Two autocmds give it the lifetime it should have had:
+
+- **`WinClosed`**, not `QuitPre`: a file window can go by `:q`, `<C-w>c`, `:close`, `:bd` or a plugin, and only `WinClosed` sees all of them. It fires with the window still in the list, so the survey is deferred a tick to the layout the user is left with. The handler returns early unless the window that closed was itself a file window — without that, a picker float dismissed over a chat-only layout counts as the last file leaving
+- **`QuitPre`**: `:q` in the chat quits the session. Requires both `args.buf` to be a chat *and* the focused buffer to be that same buffer, because `QuitPre` also fires per window on `:qall` naming buffers that are not focused. The quit is scheduled rather than run inline — from inside `QuitPre` nvim is already mid-close
+
+`verdict()` is the decision, split out from the acting on it so the suite can ask what the layout implies without quitting the nvim running it. `quit` when no file window is left anywhere, `orphaned` plus the window list when a tab holds only the chat while another tab still has files — those windows are hidden (`nvim_win_hide`, not closed) so the conversation survives and `<leader>cc` brings it back.
+
+`M.toggle` consults `is_last_window` before delegating, so the E444 path is a message rather than a stack trace when a user has reached a chat-only layout deliberately (`:only`, or `chat.close_with_last_file = false`).
 
 A "thinking…" spinner is shown during chat requests via autocmds on `CodeCompanionChatSubmitted` / `CodeCompanionRequestFinished`. The spinner skips the case where `ChatSubmitted` fires but `current_request` is nil — an ACP submit that fails before a prompt exists still fires the event, but `RequestFinished` never comes, so a spinner started there would never stop.
 
