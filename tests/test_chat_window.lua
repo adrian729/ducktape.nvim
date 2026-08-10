@@ -110,6 +110,59 @@ local verdict, orphans = window.verdict()
 eq("chat alone in its tab, files in another", verdict, "orphaned")
 eq("and one window is named", #orphans, 1)
 
+section("report, for :checkhealth")
+reset()
+local report = window.report()
+ok(report.registered, "reports the autocmds as registered")
+eq("counts the chats on screen", report.chats, 0)
+vim.cmd("vsplit")
+api.nvim_win_set_buf(0, chat_buf())
+eq("and again with one up", window.report().chats, 1)
+reset()
+-- The unsaved list is what explains a `:q` that was refused rather than ignored.
+vim.cmd("enew")
+api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved" })
+ok(#window.report().unsaved > 0, "names buffers that would have nvim refuse the quit")
+vim.bo.modified = false
+reset()
+
+section("QuitPre stands the chat down")
+-- `nvim_exec_autocmds` runs the handler without running the `:q` behind it, so the decision can be
+-- asserted from inside the session it would otherwise have quit.
+local function fire_quitpre()
+	api.nvim_exec_autocmds("QuitPre", { buffer = api.nvim_get_current_buf() })
+end
+
+reset()
+local file = api.nvim_get_current_win()
+vim.cmd("vsplit")
+local cbuf = chat_buf()
+api.nvim_win_set_buf(0, cbuf)
+api.nvim_set_current_win(file)
+fire_quitpre()
+eq("the last file window: chat is put away", #vim.fn.win_findbuf(cbuf), 0)
+ok(api.nvim_buf_is_valid(cbuf), "and its buffer survives, so VimLeavePre can still save it")
+-- It must stay away even though the `:q` behind this never ran, which is the refused-quit case.
+-- Restoring it was tried and reverted: reopening a chat focuses it, which left a refused `:q` with
+-- the cursor in the chat instead of in the file it was refused over.
+vim.wait(100, function()
+	return false
+end)
+eq("and stays away when the quit does not happen", #vim.fn.win_findbuf(cbuf), 0)
+eq("leaving only the file window", #api.nvim_tabpage_list_wins(0), 1)
+
+-- The reason this is hidden rather than quit: `:q` over an unsaved file is refused, `:q!` is not,
+-- `:wq` writes first. Standing the chat down leaves every one of those to nvim.
+reset()
+vim.cmd("vsplit")
+local second = api.nvim_get_current_win()
+vim.cmd("vsplit")
+local kept = chat_buf()
+api.nvim_win_set_buf(0, kept)
+api.nvim_set_current_win(second)
+fire_quitpre()
+eq("another file still open: chat stays", #vim.fn.win_findbuf(kept), 1)
+
 section("is_last_window")
 reset()
 eq("the only window is the last one", window.is_last_window(api.nvim_get_current_win()), true)

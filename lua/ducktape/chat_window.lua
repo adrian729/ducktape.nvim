@@ -71,6 +71,29 @@ end
 ---back round here and start a second one.
 local quitting = false
 
+---Stand the chat down so it is not in the way of a quit that is already happening.
+---
+---The whole of what `:h QuitPre` exists for, quoted: "Can be used to close any non-essential window
+---if the current window is the last ordinary window." Hiding here rather than quitting ourselves is
+---what keeps the quit the user's own — `:q!` still forces, `:q` over an unsaved file still refuses
+---with E37, `:wq` still writes, `ZZ` still does what `ZZ` does. Running our own `:quitall` instead
+---would flatten all of that into one fixed spelling and silently disagree with what was typed.
+---
+---Hidden, never closed: the buffer is what `VimLeavePre` walks to save the session IDs, and a chat
+---whose buffer went first would be a chat that does not come back tomorrow.
+---
+---It stays down even when the quit is then refused — `:q` over an unsaved file is E37, and what that
+---leaves is the file, the cursor where it was, and nvim's own message about it. Putting the chat back
+---was tried and is worse: reopening focuses it (codecompanion's `ui:open`), so a refused `:q` ended
+---with the cursor in the chat rather than in the file it was refused over. `<leader>cc` is one
+---keypress, and the file behaving exactly as it does without this plugin is worth more.
+---@param chats number[]
+local function stand_down(chats)
+	for _, win in ipairs(chats) do
+		pcall(api.nvim_win_hide, win)
+	end
+end
+
 ---Take the session down, the way `:q` in the last file window would have.
 local function quit_session()
 	if quitting then
@@ -124,10 +147,40 @@ local function reap()
 	if verdict == "quit" then
 		return quit_session()
 	end
-	for _, win in ipairs(orphans) do
-		-- Hide rather than close: the conversation survives, and `<leader>cc` brings it back.
-		pcall(api.nvim_win_hide, win)
+	stand_down(orphans)
+end
+
+---What `:checkhealth ducktape` needs to say whether these rules are live.
+---
+---The failure worth reporting is a silent one: an nvim that has not been restarted since the plugin
+---was updated has none of these autocmds, and a `:q` in it simply leaves the chat behind saying
+---nothing. Nothing else in the session distinguishes that from the feature not working.
+---@return { registered: boolean, chats: number, unsaved: string[] }
+function M.report()
+	local got, autocmds = pcall(api.nvim_get_autocmds, { group = "DucktapeChatWindow" })
+	local events = {}
+	for _, au in ipairs(got and autocmds or {}) do
+		events[au.event] = true
 	end
+
+	-- Buffers that would have nvim refuse a `:q`. Reported because the refusal is correct and the
+	-- chat comes back from it, which together look exactly like the rule never fired.
+	local unsaved = {}
+	for _, buf in ipairs(api.nvim_list_bufs()) do
+		if api.nvim_buf_is_loaded(buf) and vim.bo[buf].modified and vim.bo[buf].buftype == "" then
+			local name = api.nvim_buf_get_name(buf)
+			table.insert(
+				unsaved,
+				name ~= "" and vim.fn.fnamemodify(name, ":~:.") or ("[No Name] (buffer %d)"):format(buf)
+			)
+		end
+	end
+
+	return {
+		registered = (events.QuitPre and events.WinClosed) or false,
+		chats = #(select(1, survey())),
+		unsaved = unsaved,
+	}
 end
 
 ---Would closing this window leave nvim with nothing? The question codecompanion's `:hide` does not
@@ -202,22 +255,34 @@ function M.setup()
 		end,
 	})
 
-	-- `:q` in the chat. The chat has a show/hide of its own on `<leader>cc`, so `:q` is free to
-	-- mean there what it means in a file window: quit.
+	-- The `:q` family — `:q`, `:q!`, `:wq`, `:x`, `ZZ`, `:qa` — all of which arrive here and
+	-- nowhere else. Two cases, and they are not symmetric.
 	api.nvim_create_autocmd("QuitPre", {
 		group = group,
 		callback = function(args)
-			if quitting or not opts().quit_closes_session then
+			if quitting then
 				return
 			end
-			-- QuitPre also fires per window on `:qall`, where the buffer it names need not be the
-			-- focused one. Requiring both keeps this to a `:q` typed in the chat.
-			if api.nvim_get_current_buf() ~= args.buf or not is_chat_buf(args.buf) then
+			local current = api.nvim_get_current_win()
+
+			-- `:q` typed in the chat takes the session with it. The chat has a show/hide of its own
+			-- on `<leader>cc`, so `:q` is free to mean there what it means in a file window.
+			if opts().quit_closes_session and is_chat_win(current) and api.nvim_get_current_buf() == args.buf then
+				-- After the window this `:q` is already closing rather than instead of it:
+				-- quitting from inside QuitPre runs while nvim is mid-close.
+				return vim.schedule(quit_session)
+			end
+
+			-- `:q` in the last file window. Get the chat out of the way and let nvim finish the
+			-- quit the user actually asked for, rather than substituting one of our own.
+			if not opts().close_with_last_file or not is_ordinary_win(current) then
 				return
 			end
-			-- After the window this `:q` is already closing rather than instead of it: quitting
-			-- from inside QuitPre runs while nvim is mid-close.
-			vim.schedule(quit_session)
+			local chats, ordinary = survey()
+			if #chats == 0 or #ordinary > 1 then
+				return
+			end
+			stand_down(chats)
 		end,
 	})
 end

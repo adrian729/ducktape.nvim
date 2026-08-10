@@ -1,5 +1,5 @@
 *ducktape.txt*
-                                 For NVIM v0.11    Last change: 2026 August 09
+                                 For NVIM v0.11    Last change: 2026 August 10
 
 ==============================================================================
 Table of Contents                                 *ducktape-table-of-contents*
@@ -1429,8 +1429,20 @@ The chat is a sidecar to the file it was opened next to, and it is treated as
 one. Nvim does not know that on its own — to nvim the chat window is an
 ordinary window — so two rules are added:
 
-- Closing the last file window takes the chat with it, which quits the session. Without this you are left with a session that is nothing but chat, and that chat cannot even be toggled away: hiding the last window is `E444`.
-- `:q` in the chat quits the session too, the same as `:q` in the last file window would. Putting the chat away without quitting is what `<leader>cc` is for, so `:q` is free to mean what it says everywhere else.
+- `:q` in your last file window quits the session, chat included — as do `:q!`, `:wq`, `:x` and `ZZ`. The chat is stood down and the quit is otherwise left entirely to nvim, so each keeps its own meaning: `:q!` forces, `:wq` writes first, and `:q` over an unsaved file is still refused with nvim’s own `E37`, leaving you in your file with the cursor where it was. The chat goes either way — `<leader>cc` brings it back. Without this you are left with a session that is nothing but chat, and that chat cannot even be toggled away: hiding the last window is `E444`.
+- `:q` in the chat quits the session too. Putting the chat away without quitting is what `<leader>cc` is for, so `:q` is free to mean what it says everywhere else.
+
+Nothing is lost either way, including on a forced quit. The chat buffer is a
+`nofile` scratch buffer — the conversation itself lives with the agent, and
+what ducktape saves on exit is the session ID, which it writes from
+`VimLeavePre`. That fires on `:qa!` exactly as it does on `:qa`.
+
+If `:q` leaves the chat behind, `:checkhealth ducktape` says why under **chat
+window rules**. The two answers it gives are the two that happen: the autocmds
+are missing, because this nvim has been running since before the plugin was
+installed or updated and they are registered by setup — restart it; or a
+buffer has unsaved changes, in which case nvim refused the `:q` itself with
+`E37` and put the chat back, and `:wq` / `:q!` / `:wa` is what you meant.
 
 Tabs are handled locally: if a tab is left holding only the chat while another
 tab still has files open, that chat is hidden and the tab closes, rather than

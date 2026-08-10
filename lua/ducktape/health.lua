@@ -432,6 +432,55 @@ local function check_config()
 	info(fmt("session scope: %s → %s", tostring(cfg.session.scope), tostring(require("ducktape.scope").key())))
 end
 
+---The chat's window rules: registered at all, and what would stop them.
+---
+---A section of its own because this is the one part of the plugin whose failure says nothing. The
+---rule fires from autocmds registered in `setup`, so an nvim left running across an update has none
+---of them, and a `:q` in it quietly leaves the chat behind exactly as it did before the feature
+---existed.
+local function check_chat_window()
+	start("ducktape: chat window rules")
+
+	local cfg = require("ducktape.config").get().chat or {}
+	local report = require("ducktape.chat_window").report()
+
+	if report.registered then
+		ok("QuitPre and WinClosed are registered")
+	else
+		error(
+			"the chat's lifetime autocmds are missing, so `:q` will leave the chat behind. Restart "
+				.. "nvim — these are registered by setup, and an nvim running since before the plugin "
+				.. "was installed or updated never got them."
+		)
+	end
+
+	if cfg.close_with_last_file == false then
+		info("close_with_last_file = false — the chat is meant to outlive your last file here")
+	else
+		ok("close_with_last_file — `:q` in your last file window takes the chat with it")
+	end
+	if cfg.quit_closes_session == false then
+		info("quit_closes_session = false — `:q` in the chat closes only the chat window")
+	else
+		ok("quit_closes_session — `:q` in the chat quits the session")
+	end
+
+	info(fmt("chat windows open: %d", report.chats))
+
+	-- The honest reading of a `:q` that did not quit: nvim refused it, which is its own answer and
+	-- not this plugin declining to act. The chat still goes; what is left is the file and E37.
+	if #report.unsaved > 0 then
+		warn(
+			fmt(
+				"%d buffer(s) with unsaved changes, so `:q` will be refused with E37 — the chat goes "
+					.. "anyway and you are left in your file. `:wq`, `:q!` or `:wa` instead: %s",
+				#report.unsaved,
+				table.concat(report.unsaved, ", ")
+			)
+		)
+	end
+end
+
 function M.check()
 	check_deps()
 	check_parsers()
@@ -439,6 +488,7 @@ function M.check()
 	check_binaries()
 	check_providers()
 	check_config()
+	check_chat_window()
 end
 
 return M
