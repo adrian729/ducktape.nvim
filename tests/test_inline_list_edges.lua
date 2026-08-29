@@ -39,6 +39,7 @@ package.loaded["ducktape.inline.http"] = {
 
 local api = vim.api
 local inline = require("ducktape.inline")
+require("ducktape.providers").set_provider("inline", "ollama")
 local list = require("ducktape.inline.list")
 
 local notes = {}

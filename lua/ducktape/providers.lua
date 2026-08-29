@@ -685,6 +685,9 @@ local function fetch_subprocess(provider, strategy, cb)
 	if type(cmd) ~= "table" or #cmd == 0 then
 		return cb(nil, ("%s has no model command"):format(provider))
 	end
+	if vim.fn.executable(cmd[1]) == 0 then
+		return cb(nil, ("`%s` is not on PATH"):format(cmd[1]))
+	end
 	vim.system(cmd, { text = true }, function(out)
 		vim.schedule(function()
 			if out.code ~= 0 then
