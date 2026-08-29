@@ -1,8 +1,5 @@
--- ducktape.keys: the strings that name keys must read exactly as they did when they were
--- hardcoded, and must follow a remap rather than keep naming the defaults.
---
--- The expected values below are copied from the pre-extraction source. They are the whole point of
--- this suite: threading keys through a lookup is only safe if it is invisible by default.
+-- ducktape.keys: key names stay byte-identical to the old hardcoded strings and follow remaps.
+-- The expected values below are copied from the pre-extraction source.
 
 local REPORT = "/tmp/keys.out"
 local passed, failed, lines = 0, 0, {}
@@ -62,8 +59,7 @@ for action, lhs in pairs(shipped) do
 end
 
 section("all 19 global actions are present, and the diff keys are not among them")
--- 17 of them are the set extracted from the original config; models_refresh is the one addition,
--- and it is here so a rename or a dropped entry fails rather than going unnoticed.
+-- 17 are from the original config; models_refresh was added so a rename or drop is caught.
 local globals = keys.global_actions()
 eq("19 global actions", #globals, 19)
 ok(vim.tbl_contains(globals, "models_refresh"), "refreshing the model lists has a key of its own")
@@ -80,7 +76,6 @@ end
 eq("and a normal-only one stays normal-only", #keys.modes("cancel"), 1)
 
 section("the messages that name keys are byte-identical to the hardcoded originals")
--- Rendered by the same expressions the source uses, so a change to either side shows up here.
 local K = keys.label
 eq(
 	"in-flight collision",
@@ -129,8 +124,7 @@ eq("but a key still has a name to print", keys.lhs("cancel"), "<leader>cx")
 eq("and the diff keys are untouched", keys.lhs("diff_accept"), "g2")
 
 section("the two messages that named a prefix rather than a key")
--- The originals said "<leader>cm", which is a prefix and not bound to anything: pressing it waits
--- for a third character. Both now name the picker they mean, and follow a remap like the rest.
+-- The originals said "<leader>cm", an unbound prefix. Both now name the picker and follow remaps.
 eq(
 	"the deep-transport refusal",
 	("it works on claude and on opencode. Switch with %s."):format(K("inline_pick")),
@@ -147,9 +141,7 @@ eq(
 )
 
 section("the same shorthand through vim.g, which is the route plugin/ reads")
--- plugin/ducktape.lua asks config.get(), not config.setup(): it runs long before any extension
--- opts exist. Normalising the shorthand in setup alone let `vim.g.ducktape = { keymaps = false }`
--- create the whole default set it asked to suppress — measured in a real config, not theorised.
+-- plugin/ducktape.lua runs before extension opts exist, so the shorthand must normalise there too.
 vim.g.ducktape = { keymaps = false }
 package.loaded["ducktape.config"] = nil
 package.loaded["ducktape.keys"] = nil

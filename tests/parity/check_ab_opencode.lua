@@ -1,8 +1,4 @@
--- Is the opencode ACP timeout ours, or opencode's? Run the *pre-extraction* pool from
--- nvim_main/lua/ai against the same adapter definitions and compare.
---
--- The adapters come from ducktape's config, which holds them verbatim as data, so the only thing
--- that differs between the two runs is which pool implementation drives the transport.
+-- A/B the ducktape ACP pool against the pre-extraction nvim_main pool with the same adapters.
 local function ab(label, pool_module, prompt)
 	local reply, err, done = nil, nil, false
 	local started = vim.uv.now()

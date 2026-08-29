@@ -1,19 +1,13 @@
--- Smoke harness for the connection pool.
---
--- This is the seam where a transport problem is distinguishable from a parsing or placement
--- problem: :Ducktape send does no parsing, no placement and no buffer mutation. It is the first
--- thing to reach for when something downstream misbehaves.
+-- Smoke harness for the connection pool. `:Ducktape send` skips parsing/placement, so it isolates
+-- transport problems first.
 
 local providers = require("ducktape.providers")
 local ui = require("ducktape.ui")
 
 local M = {}
 
----Required lazily, not at the top of the file. `setup()` runs from the plugin's own `config()`,
----and the pool's first statement is `require("codecompanion.acp")` — which, reached from a cold
----`require("ducktape.acp_pool")`, makes lazy.nvim load the plugin, run `config()`, and come straight
----back here into a module that is still loading. Deferring the require breaks that cycle and is
----what lets the pool be loaded on its own, which is exactly what debugging it starts with.
+---Lazy require: loading `ducktape.acp_pool` at chunk level would re-enter this module during
+---codecompanion's config cycle.
 local function pool()
 	return require("ducktape.acp_pool")
 end

@@ -1,8 +1,4 @@
--- The telescope backend.
---
--- Layout comes from the user's own telescope config, deliberately unset here, so a ducktape picker
--- reads the same way as every other picker they have: prompt where they put it, closest match
--- nearest the prompt.
+-- Telescope backend. Layout comes from the user's telescope config.
 
 local M = {}
 
@@ -26,11 +22,8 @@ function M.open(spec)
 	local function finder()
 		return finders.new_table({
 			results = spec.entries(),
-			-- The entries are already in telescope's own shape — `display` returning text plus
-			-- highlights — so there is nothing to convert.
 			entry_maker = function(entry)
-				-- Telescope calls `entry:display(self)` with the picker as the argument, so the
-				-- rendered text is captured rather than read off the argument.
+				-- Telescope passes the picker as self to display(), so capture text directly.
 				entry.display = function()
 					return entry.text, entry.highlights
 				end
@@ -44,8 +37,7 @@ function M.open(spec)
 	end
 
 	function handle.refresh()
-		-- The picker is gone as soon as its prompt buffer is, and refreshing a dead one throws from
-		-- inside telescope rather than returning an error.
+		-- Refreshing a dead picker throws inside telescope.
 		if not handle.is_open() then
 			picker = nil
 			return
@@ -78,8 +70,6 @@ function M.open(spec)
 			end
 
 			require("ducktape.picker").bind_actions(spec, {
-				-- Both modes: telescope starts in insert, and the documented keys have to work
-				-- without leaving it.
 				map = function(lhs, fn)
 					map({ "i", "n" }, lhs, fn)
 				end,

@@ -1,11 +1,7 @@
--- The wiring no unit test covers: that plugin/ducktape.lua sets everything up without loading the
--- core, that bootstrap() refuses before setup, and that after setup the adapters codecompanion
--- resolves are *ours* -- the ones carrying the write defence.
---
--- The last part is the reason this suite exists. Codecompanion's own stock adapter entries are
--- plain strings pointing at its built-in modules, so an install guard that only looks for "is
--- something already here" silently declines to install ours, and every agent then runs unhardened
--- with a 20s timeout and no dontAsk. That happened, and only a check like this one caught it.
+-- Wiring not covered by unit tests: plugin/ducktape.lua sets up without loading the core,
+-- bootstrap() refuses before setup, and codecompanion resolves our hardened adapters. Stock
+-- adapter entries are plain strings, so an "is something already here" guard silently skipped
+-- installing ours, leaving agents unhardened with a 20s timeout and no dontAsk.
 
 local REPORT = "/tmp/wiring.out"
 local passed, failed, lines = 0, 0, {}
@@ -25,7 +21,6 @@ local function ok(cond, what, detail)
 	flush()
 end
 
--- The plugin script must not require the core
 vim.cmd("runtime plugin/ducktape.lua")
 ok(vim.g.loaded_ducktape, "plugin script ran")
 ok(package.loaded["ducktape.chat"] == nil and package.loaded["ducktape.inline"] == nil, "core NOT loaded by it")
@@ -34,7 +29,6 @@ ok(vim.fn.maparg("<Plug>(DucktapeChatToggle)", "n") ~= "", "<Plug> mapped")
 ok(vim.o.statusline:find("ducktape.statusline", 1, true) ~= nil, "statusline injected")
 ok(vim.fn.exists(":Ducktape") == 2, ":Ducktape exists")
 
--- 2. bootstrap must refuse while not set up
 local said = {}
 package.loaded["ducktape.ui"] = package.loaded["ducktape.ui"] or require("ducktape.ui")
 local real_say = require("ducktape.ui").say
@@ -45,7 +39,6 @@ ok(require("ducktape").bootstrap() == false, "bootstrap refuses before setup")
 ok((said[1] or ""):find("not set up", 1, true) ~= nil, "and says why")
 require("ducktape.ui").say = real_say
 
--- 3. setup via the extension, the way codecompanion does it
 require("codecompanion").setup({ extensions = { ducktape = { opts = {} } } })
 ok(require("ducktape").is_ready(), "ready after cc setup")
 ok(require("ducktape").bootstrap(), "bootstrap now allows")

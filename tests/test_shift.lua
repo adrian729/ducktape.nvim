@@ -1,5 +1,4 @@
--- Does editing above an in-flight inline request move its target correctly, and does the cursor
--- stay where the user left it when the reply lands?
+-- Editing above an in-flight inline request moves its target; the reply lands there and the cursor stays put.
 local pass, fail = 0, 0
 local REPORT = "/tmp/inline_shift.out"
 local log_lines = {}
@@ -36,8 +35,7 @@ package.loaded["ducktape.inline.http"] = {
 
 local api = vim.api
 local inline = require("ducktape.inline")
--- This suite stubs `ducktape.inline.http`, which only the ollama provider routes through — pinned
--- explicitly rather than relying on the shipped default, which is opencode's relay.
+-- Stub ducktape.inline.http, which only the ollama provider routes through; pin it explicitly.
 require("ducktape.providers").set_provider("inline", "ollama")
 
 local notes = {}
@@ -76,7 +74,6 @@ end
 say("\n=== a selection on line 20, then five lines added above it ===")
 
 local buf = numbered("shift.lua")
--- Line 20 is row 19; select just it.
 inline.submit({
 	bufnr = buf,
 	range = { s0 = 19, e0 = 20, has_selection = true },
@@ -99,7 +96,6 @@ ok(
 	api.nvim_buf_get_lines(buf, 24, 25, false)[1]
 )
 
--- And the reply must land there, not on the original row 19.
 captured[#captured].on_done("```lua\nREWRITTEN\n```")
 vim.wait(250)
 local diff = inline.list()[1]
@@ -172,7 +168,6 @@ local work = numbered("working.lua")
 local win = api.nvim_get_current_win()
 inline.submit({ bufnr = work, range = { s0 = 29, e0 = 31, has_selection = true }, instruction = "far away" })
 
--- The user moves off to work somewhere else entirely, near the top of the file.
 api.nvim_win_set_cursor(win, { 3, 4 })
 vim.cmd("normal! zt")
 local before_cursor = api.nvim_win_get_cursor(win)
@@ -217,8 +212,7 @@ ok(
 
 say("\n=== a stale prompt is the one thing editing above does affect ===")
 
--- Not a defect to fix here, but worth pinning: the prompt is built when the request is sent, so
--- the model never sees anything typed afterwards. The placement is what stays correct.
+-- The prompt is built when the request is sent, so later edits are invisible to the model.
 drain()
 local stale = numbered("stale.lua")
 local sent = {}

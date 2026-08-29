@@ -1,4 +1,4 @@
--- Drives ducktape.inline + ducktape.inline.list headlessly.
+-- ducktape.inline and ducktape.inline.list, headless.
 local pass, fail = 0, 0
 local REPORT = "/tmp/inline_list.out"
 local log_lines = {}
@@ -25,7 +25,6 @@ pcall(function()
 	require("lazy").load({ plugins = { "codecompanion.nvim", "plenary.nvim" } })
 end)
 
--- Stub the ollama HTTP transport so requests stay in flight until we say otherwise.
 local captured = { cancels = 0 }
 package.loaded["ducktape.inline.http"] = {
 	send = function(_, cb)
@@ -40,8 +39,7 @@ package.loaded["ducktape.inline.http"] = {
 
 local api = vim.api
 local inline = require("ducktape.inline")
--- This suite stubs `ducktape.inline.http`, which only the ollama provider routes through — pinned
--- explicitly rather than relying on the shipped default, which is opencode's relay.
+-- Stub ducktape.inline.http, which only the ollama provider routes through; pin it explicitly.
 require("ducktape.providers").set_provider("inline", "ollama")
 local list = require("ducktape.inline.list")
 
@@ -82,12 +80,10 @@ end
 
 print("\n=== registry: fields, ordering, state ===")
 
--- A realistic terminal: at headless's 80 columns the row has to choose between the prompt and
--- the tool name, which is its own test (see the narrow-terminal suite).
+-- Use a wide terminal here; narrow-terminal layout is covered separately.
 vim.o.columns = 160
 
--- Both targets stay on screen: show_diff drops a reply whose buffer is no longer visible, so an
--- off-screen target never reaches the review state this is about.
+-- Keep both targets on screen: show_diff drops replies whose buffer is not visible.
 vim.cmd("split")
 local win_a, win_b = api.nvim_list_wins()[1], api.nvim_list_wins()[2]
 
@@ -154,7 +150,6 @@ ok(lines[2]:find("thinking", 1, true) ~= nil, "the in-flight row says thinking",
 ok(lines[2]:find("beta.lua", 1, true) ~= nil, "and which buffer it belongs to", lines[2])
 ok(lines[1]:find("▶", 1, true) ~= nil, "the cursor marker is on the first row", lines[1])
 
--- Every row must fit inside the window, or the border clips it silently.
 local width
 for _, win in ipairs(api.nvim_list_wins()) do
 	local cfg = api.nvim_win_get_config(win)
@@ -188,7 +183,6 @@ press(list_buf, "j")
 lines = float_lines()
 ok(lines[2]:find("▶", 1, true) ~= nil, "j moved the cursor marker", lines[2])
 
--- Discard beta: x rejects a finished diff, its two lines coming back as they were.
 press(list_buf, "x")
 vim.wait(150)
 local beta = api.nvim_buf_get_lines(buf_b, 0, -1, false)
@@ -198,7 +192,6 @@ lines = float_lines()
 ok(#lines == 1, "the list shrank to one row", #lines)
 ok(lines[1]:find("alpha", 1, true) ~= nil, "the cursor fell back onto the row that is left", lines[1])
 
--- Accept alpha.
 press(list_buf, "a")
 vim.wait(150)
 local alpha = api.nvim_buf_get_lines(buf_a, 0, -1, false)
@@ -212,7 +205,7 @@ ok(not list.is_open(), "q closed it")
 
 print("\n=== cancelling from the list ===")
 
--- Separate rows: two requests over the same lines are refused now, on purpose.
+-- Two requests over the same lines are refused by design.
 local buf_c = target("gamma.lua", { "x = 1", "y = 1" })
 inline.submit({ bufnr = buf_c, range = { s0 = 0, e0 = 1, has_selection = true }, instruction = "make x 2" })
 inline.submit({ bufnr = buf_c, range = { s0 = 1, e0 = 2, has_selection = true }, instruction = "make y 3" })

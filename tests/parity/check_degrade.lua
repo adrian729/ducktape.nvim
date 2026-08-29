@@ -1,9 +1,4 @@
--- Without telescope, nothing is unreachable any more.
---
--- This check used to assert the opposite: the chat list and both model pickers named telescope and
--- did nothing. `ducktape.picker` gives them a backend that needs no plugin, so what is left to
--- establish is that they really open, that the fallback is the one chosen, and that they say nothing
--- about telescope — a message naming a plugin you do not need is its own kind of wrong.
+-- With the built-in picker fallback, chat/model pickers must open without telescope and never mention it.
 local pass, fail = 0, 0
 local function check(ok, what)
 	if ok then
@@ -31,8 +26,7 @@ vim.api.nvim_echo = function(chunks, ...)
 	return orig(chunks, ...)
 end
 
----Each of the three features telescope used to gate: it has to open a window of its own and not
----mention telescope on the way.
+---Run a picker feature and assert it opens a window without mentioning telescope.
 local function opens_without_telescope(label, fn)
 	said = {}
 	local before = #vim.api.nvim_list_wins()
@@ -43,11 +37,10 @@ local function opens_without_telescope(label, fn)
 		msg:lower():find("telescope", 1, true) == nil,
 		label .. " did not mention telescope, said: " .. msg:sub(1, 120)
 	)
-	-- The default backend opens two windows, results and prompt. One is enough to establish that
-	-- something was actually shown rather than silently skipped.
+	-- The default backend opens results + prompt; one window proves something was shown.
 	check(#vim.api.nvim_list_wins() > before, label .. " opened a window")
 
-	-- Back to a clean slate for the next one: these are real floats and they stack.
+	-- Close floats between cases; they stack.
 	for _, win in ipairs(vim.api.nvim_list_wins()) do
 		if vim.api.nvim_win_get_config(win).relative ~= "" then
 			pcall(vim.api.nvim_win_close, win, true)
@@ -68,7 +61,6 @@ end)
 
 vim.api.nvim_echo = orig
 
--- The rest is unaffected.
 check(require("ducktape.statusline").render() == "", "the statusline still renders")
 check(
 	vim.tbl_get(require("codecompanion.adapters").resolve("claude_code"), "defaults", "session_config_options", "mode")

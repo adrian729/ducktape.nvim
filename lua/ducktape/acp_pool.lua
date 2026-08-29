@@ -1,9 +1,8 @@
--- A pool of independent ACP connections, one session each.
+-- Pool of independent ACP connections, one session each.
 --
--- CodeCompanion's ACP client holds `session_id` as a scalar and `_active_prompt` as a single
--- slot, and drops every message whose sessionId isn't the active one. So concurrency cannot be
--- sessions on one process; it has to be processes. This module owns that: one warm primary per
--- provider, overflow spawned on demand and reaped when idle.
+-- CodeCompanion's ACP client keeps one `session_id` and `_active_prompt`, dropping messages for
+-- other sessions. Concurrency needs processes, not sessions: one warm primary per provider, overflow
+-- spawned on demand and reaped when idle.
 
 local ACP = require("codecompanion.acp")
 local acp_defaults = require("codecompanion.interactions.chat.acp.defaults")
@@ -15,16 +14,12 @@ local ui = require("ducktape.ui")
 local M = {}
 
 ---Providers whose inline-over-ACP path is withheld, and why.
----
----Set when a connection could not be given a verified write defence. Nothing else about the
----provider is affected — chat still works, and so does a relay or HTTP transport if it has one —
----so this is a withheld capability rather than a broken provider. `:checkhealth ducktape` reads it,
----and so does the model picker, which is where a user would otherwise pick it and wonder.
+---Set when a write defence could not be verified. Chat, relay, and HTTP still work; this is a
+---withheld capability, not a broken provider. Read by `:checkhealth ducktape` and the picker.
 ---@type table<string, string>
 M.withheld = {}
 
----Pool sizing and lifetimes. Read per call rather than latched, so `opts.pool` lands without a
----restart and a provider with a lighter footprint than opencode's ~536 MB idle can be given room.
+---Pool sizing and lifetimes. Read per call so `opts.pool` changes without restart.
 ---@return table
 local function tuning()
 	return require("ducktape.config").get().pool
@@ -45,19 +40,10 @@ local function notify(msg, level)
 	ui.say("[ducktape.pool] " .. msg, level or vim.log.levels.ERROR)
 end
 
---=============================================================================
--- Connection lifecycle
---=============================================================================
-
 ---Refuse client-mediated writes on every inline connection.
----
----Nothing exercises this path today — neither agent ever sends `fs/write_text_file` — so this
----is insurance against a future version or a third agent, not the thing keeping us safe. It
----works because DISPATCH invokes the handler as a method on the connection, so an
----instance-level override wins. It fails open if upstream ever inlines the write logic into
----DISPATCH, hence the assertion rather than a silent no-op.
----Checked before every spawn rather than assumed: if upstream renames or inlines the handler
----the override silently stops working, so fail loudly rather than fail open.
+---Insurance against future agents: neither current agent sends `fs/write_text_file`. The override
+---wins because DISPATCH invokes it as a method on the connection. Checked before each spawn so a
+---renamed or inlined handler fails loudly instead of failing open.
 ---@return string|nil error
 local function write_guard_available()
 	if type(ACP.handle_fs_write_file_request) ~= "function" then
@@ -66,7 +52,7 @@ local function write_guard_available()
 	end
 end
 
----What a live session currently reports for each option category.
+---Read each option's current value keyed by category.
 ---@param conn table
 ---@return table<string, string>
 local function current_options(conn)
@@ -79,10 +65,7 @@ local function current_options(conn)
 	return current
 end
 
----Set an option by its category, which is what a guard is written in terms of.
----
----`set_config_option` wants the agent's own option *id*, and only the live session knows what that
----is — the category is the stable name across agents, the id is not.
+---Set an option by category (stable) rather than by agent-specific option id.
 ---@param conn table
 ---@param category string
 ---@param value string
@@ -102,21 +85,13 @@ end
 
 ---Establish and verify the write defence on a fresh inline connection.
 ---
----Two halves, and only the second is enforcement:
+---`acp_defaults.apply` is best-effort: it warns and gives up when the agent rejects a value, leaving
+---claude in its default write-capable mode. Verification reads values back and refuses connections
+---that did not take them. Since the mode is the real defence — neither agent uses the client-mediated
+---`fs/*` path — verification is what actually keeps writes out.
 ---
----  request  `acp_defaults.apply` has already pushed whatever the adapter asked for, but it is
----           best-effort — it gives up with a `log:warn` when the agent advertised no configOptions
----           or when the value is not one it offers. On claude that silently leaves the session in
----           its default, write-capable mode with only a line in codecompanion.log to show it.
----  verify   the values are read back off the live session, and a connection that did not take
----           them is refused. Since the mode *is* the defence — neither shipped agent uses the
----           client-mediated `fs/*` path, so the write guard above covers nothing in practice —
----           this is the part that actually keeps writes out.
----
----A provider whose spec names no requirement has one *derived* from what the agent itself
----advertises, so a provider nobody has ever heard of is guarded without any configuration. When no
----write-denying mode exists at all, this refuses — and the caller withholds inline for that
----provider rather than failing setup or letting an unguarded agent through.
+---Providers with no spec requirement derive one from what the agent advertises. When no write-denying
+---mode exists, inline is withheld rather than letting an unguarded agent through.
 ---@param provider string
 ---@param conn table
 ---@return string|nil error
@@ -129,8 +104,8 @@ local function establish_guard(provider, conn)
 			)
 	end
 	if vim.tbl_isempty(required) then
-		-- `guard.unguarded = true`, or a spec that opted out of deriving. Said once per connection
-		-- rather than silently, because this is the one path where an agent keeps its write tools.
+		-- `guard.unguarded = true` or opted-out deriving: say once per connection because this is the
+		-- one path where an agent keeps its write tools.
 		if providers.effective_guard(provider).unguarded then
 			notify(
 				("%s runs inline with no write defence (guard.unguarded = true)"):format(provider),
@@ -140,8 +115,8 @@ local function establish_guard(provider, conn)
 		return nil
 	end
 
-	-- Push anything the adapter's own defaults did not land. A derived requirement is not in those
-	-- defaults at all — it could not be, since it is only knowable once the agent has answered.
+	-- Push anything the adapter defaults missed. A derived requirement cannot be in those defaults
+	-- because it is only knowable once the agent answers.
 	local current = current_options(conn)
 	for category, want in pairs(required) do
 		if current[category] ~= want then
@@ -176,9 +151,8 @@ end
 local function teardown(entry)
 	entry.state = "dead"
 	if entry.conn then
-		-- disconnect() is `assert(self._state.handle):kill(9)`. kill(9) on a process that has
-		-- already exited is a no-op, so the throw only happens when no process was ever started —
-		-- a spawn that failed at connect_and_authenticate. Worth the pcall for that one case.
+		-- kill(9) on an exited process is a no-op; the throw only happens when spawn failed before
+		-- a process started. Worth the pcall for that case.
 		pcall(function()
 			entry.conn:disconnect()
 		end)
@@ -197,12 +171,10 @@ local function drop(entry)
 	teardown(entry)
 end
 
----Declared before spawn() so the process-exit hook can reach it.
-local pump
+local pump -- forward declaration for the process-exit hook
 
----The agent process went away — because it crashed, or because someone killed it. Take the
----connection out of service and fail only the request that was riding on it; the whole point
----of one session per connection is that its neighbours are unaffected.
+---Handle an agent process exit. Drop the connection and fail only its own request; neighbours are
+---unaffected because each connection holds one session.
 ---@param entry table
 local function on_process_exit(entry)
 	if entry.reaped then
@@ -244,13 +216,10 @@ local function spawn(provider, cb)
 	}
 	table.insert(pool, entry)
 
-	-- Bound the setup below. Inside a coroutine send_rpc_request has no timeout of its own, so an
-	-- agent that starts, answers `initialize` and then goes quiet suspends this body forever — and
-	-- a suspended body means an entry that stays `busy` and `spawning`: the reaper only considers
-	-- `ready` entries, and a request's watchdog can only clean up an entry that was handed to it.
-	-- Three of those and the provider's cap is gone for the rest of the session. Killing the
-	-- process routes the entry through the same death path as a crash, which frees the slot and
-	-- pumps the queue.
+	-- Bound setup: in a coroutine send_rpc_request has no timeout, so an agent that answers
+	-- initialize then goes quiet suspends this body forever. The suspended entry stays `busy` and
+	-- `spawning`, so neither the reaper nor the watchdog can clean it up, consuming the provider cap.
+	-- Killing the process routes it through the crash death path, freeing the slot and pumping the queue.
 	local function disarm()
 		local timer = entry.spawn_timer
 		entry.spawn_timer = nil
@@ -266,34 +235,29 @@ local function spawn(provider, cb)
 		end
 	end, tuning().timeout_ms)
 
-	-- Every exit from the setup body reports through cb, so disarming here covers success and
-	-- failure alike without threading a call into each branch.
+	-- Disarm on every setup exit so success and failure paths do not each thread a call.
 	local report = cb
 	cb = function(entry_or_nil, err)
 		disarm()
 		return report(entry_or_nil, err)
 	end
 
-	-- resolve() merges session_config_options into adapter.defaults itself
-	-- (adapters/acp/init.lua:126), which is where acp_defaults.apply reads them from.
+	-- resolve() merges session_config_options into adapter.defaults, where acp_defaults.apply reads them.
 	local adapter = adapters.resolve(adapter_name, {
 		session_config_options = providers.inline_session_options(provider),
 	})
 
-	-- The adapter's own public exit hook, on a per-spawn copy of the adapter. prepare_adapter
-	-- deepcopies it, and deepcopy keeps function references, so this closure survives.
+	-- Per-spawn adapter exit hook. prepare_adapter deepcopies the adapter, keeping this closure.
 	adapter.handlers.on_exit = function()
-		-- Flagged synchronously so the completion path can tell a dead process from a real
-		-- cancel: handle_process_exit calls this hook first, but then also fires
-		-- _active_prompt:handle_done("canceled"), which would otherwise be the story we tell.
+		-- Flagged synchronously so the completion path can distinguish a dead process from a real
+		-- cancel: handle_process_exit also fires _active_prompt:handle_done("canceled").
 		entry.exited = true
 		vim.schedule(function()
 			on_process_exit(entry)
 		end)
 	end
 
-	-- All connection and session setup must run inside a coroutine: outside one,
-	-- send_rpc_request falls back to a vim.wait busy-loop up to the 90s timeout.
+	-- Run setup in a coroutine: outside one, send_rpc_request busy-waits up to 90s.
 	async.sync(function()
 		local conn = ACP.new({ adapter = adapter })
 		install_write_guard(conn)
@@ -314,8 +278,7 @@ local function spawn(provider, cb)
 
 		local unmet = establish_guard(provider, conn)
 		if unmet then
-			-- Remembered so the surfaces can say inline is unavailable for this provider before the
-			-- user pays for another spawn to be told the same thing.
+			-- Remember so surfaces can say inline is unavailable without another spawn.
 			M.withheld[provider] = unmet
 			drop(entry)
 			pump(provider)
@@ -323,13 +286,10 @@ local function spawn(provider, cb)
 		end
 		M.withheld[provider] = nil
 
-		-- The agent knows its own model list, including anything released since this spec was
-		-- written. Free to take now that a session exists, and the only source for a provider whose
-		-- models strategy is `live_session`.
+		-- The live session knows its own model list and is the only source for `live_session` providers.
 		providers.enrich_from_session(provider, conn)
 
-		-- The process can die at any point above; on_process_exit has already dropped the entry
-		-- and reported it, so do not hand a corpse back as ready.
+		-- on_process_exit may have already dropped the entry; do not hand back a corpse.
 		if entry.state == "dead" then
 			return cb(nil, ("%s: the agent process exited during setup"):format(provider))
 		end
@@ -340,10 +300,6 @@ local function spawn(provider, cb)
 		cb(entry)
 	end)(function() end)
 end
-
---=============================================================================
--- Acquire / release
---=============================================================================
 
 function pump(provider)
 	local queue = queues[provider]
@@ -360,9 +316,8 @@ function pump(provider)
 		end
 	end
 
-	-- Nothing to reuse, but the cap may have room again — every entry for this provider can die
-	-- or be dropped while a request is queued, and without this the waiter has no way to ask for
-	-- a fresh process and just burns its whole deadline in the queue.
+	-- Cap may have room again after entries died while queued; without this the waiter burns its
+	-- deadline with no way to spawn.
 	if pools[provider] and #pool < tuning().cap then
 		local waiter = table.remove(queue, 1)
 		return spawn(provider, waiter)
@@ -395,10 +350,6 @@ local function acquire(provider, cb)
 
 	table.insert(queues[provider], cb)
 end
-
---=============================================================================
--- Idle reaping
---=============================================================================
 
 function M.start_reaper()
 	if reaper then
@@ -441,8 +392,8 @@ function M.stop_reaper()
 	reaper = nil
 end
 
----Tear the whole pool down. Uses our own augroup: the plugin registers a VimLeavePre autocmd
----per connection in a group it never clears, and those are not ours to remove.
+---Tear the whole pool down. Uses our own augroup; the plugin's per-connection VimLeavePre group is
+---not ours to remove.
 function M.shutdown()
 	for _, pool in pairs(pools) do
 		for i = #pool, 1, -1 do
@@ -453,8 +404,7 @@ function M.shutdown()
 	M.stop_reaper()
 end
 
----Tear down every connection for a provider. Used when the model changes, so the
----next request gets a fresh process with the new model.
+---Tear down every connection for a provider, e.g. when the model changes.
 ---@param provider string
 function M.drain_provider(provider)
 	local pool = pools[provider]
@@ -463,7 +413,7 @@ function M.drain_provider(provider)
 			teardown(table.remove(pool, i))
 		end
 	end
-	-- Fire queued waiters so they don't hang forever without an error
+	-- Fail queued waiters so they do not hang.
 	local q = queues[provider]
 	queues[provider] = nil
 	if q then
@@ -482,24 +432,17 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
 	end,
 })
 
---=============================================================================
--- Sending
---=============================================================================
-
 ---Send a prompt through the pool.
 ---@param opts { provider: string, prompt: string, timeout?: number, on_chunk?: fun(text: string), on_tool?: fun(name: string), on_done: fun(text: string), on_error: fun(msg: string) }
----@return table handle A handle with a `cancel` method
+---@return table handle Handle with `cancel`
 function M.send(opts)
 	local handle = { cancelled = false, finished = false }
 	local chunks = {}
 	local tools = {}
 	local entry
 
-	-- Deferred out of the caller's stack on purpose. PromptBuilder:handle_done() invokes the
-	-- completion handler and only *then* clears connection._active_prompt, so a callback that
-	-- starts the next prompt inline would have that new prompt nulled out from under it and
-	-- every subsequent session/update dropped. Releasing the connection here has the same
-	-- hazard, since it can pump a queued request.
+	-- Defer off the caller's stack. PromptBuilder:handle_done() calls the completion handler before
+	-- clearing _active_prompt, so an inline next-prompt or release would null it out and drop updates.
 	local function finish(fn, arg)
 		if handle.finished then
 			return
@@ -509,12 +452,10 @@ function M.send(opts)
 			if entry then
 				local dead = entry.state == "dead"
 				entry.death_cb = nil
-				-- A connection whose prompt we cancelled must not go back into the pool.
-				-- PromptBuilder:cancel() sends session/cancel and clears _active_prompt
-				-- synchronously without waiting for the agent, and the client routes later
-				-- session/updates to whatever _active_prompt happens to be by then — so the
-				-- cancelled turn's trailing chunks would be appended to the *next* request's
-				-- reply and applied to the buffer. Paying a respawn is the cheaper mistake.
+				-- Cancelled prompts must not return to the pool. PromptBuilder:cancel() clears
+				-- _active_prompt synchronously and the client routes later session/updates to whatever
+				-- _active_prompt is current then, so a cancelled turn's trailing chunks would land in the
+				-- next request. Respawning is the cheaper mistake.
 				if handle.poisoned and not dead then
 					drop(entry)
 					pump(entry.provider)
@@ -533,11 +474,8 @@ function M.send(opts)
 		finish(opts.on_error, msg)
 	end
 
-	-- One deadline covering the whole request, armed before the connection exists. Spawning is
-	-- inside it deliberately: a stale or wedged agent can accept `initialize` and then never
-	-- answer `session/new`, which without this bound is an unreported hang forever. The deadline
-	-- is pushed out again once the prompt actually goes on the wire, so time spent queued behind
-	-- other requests does not eat into the reply's own budget.
+	-- Deadline covers the whole request, including spawning, so a wedged agent cannot hang forever.
+	-- It resets once the prompt is on the wire so queue time does not eat the reply budget.
 	local timeout = opts.timeout or tuning().timeout_ms
 	handle.deadline = now() + timeout
 	handle.stage = "connecting"
@@ -570,10 +508,8 @@ function M.send(opts)
 		if err or not acquired then
 			return fail(err or "could not acquire a connection")
 		end
-		-- Already resolved before a connection came free: cancelled, or timed out while still in
-		-- the queue. Hand the connection straight back — without this the waiter went on to send
-		-- the prompt anyway, and because `finished` was already set, `finish` returned early and
-		-- never released it. Three of those and the provider's cap is gone until nvim restarts.
+		-- Cancelled or timed out while queued: hand the connection back. Without this the waiter
+		-- sends the prompt anyway, finish returns early, and the connection is leaked until restart.
 		if handle.finished then
 			release(acquired)
 			return
@@ -626,10 +562,8 @@ function M.send(opts)
 
 		handle.builder = builder
 		handle.tools = tools
-		-- The reply gets the full budget from here, and the watchdog re-arms itself to match.
-		-- It also bounds the case where a permission request arrives with no active prompt and
-		-- is dropped without any reply, leaving the agent waiting forever on an idle-looking
-		-- connection.
+		-- Reset the deadline for the reply. Also bounds the case where a permission request arrives
+		-- with no active prompt and is dropped, leaving the agent waiting forever.
 		handle.stage = "prompting"
 		handle.deadline = now() + timeout
 		builder:send()
@@ -641,8 +575,8 @@ function M.send(opts)
 		end
 		handle.cancelled = true
 		if handle.builder then
-			-- Poisons the connection: see finish(). A prompt already on the wire keeps arriving
-			-- after session/cancel, and there is no turn id to match it against.
+			-- Poison the connection: a prompt on the wire keeps arriving after session/cancel with no
+			-- turn id to match it.
 			handle.poisoned = true
 			pcall(function()
 				handle.builder:cancel()
@@ -653,10 +587,6 @@ function M.send(opts)
 
 	return handle
 end
-
---=============================================================================
--- Introspection
---=============================================================================
 
 ---@return table[] One row per live connection
 function M.status()

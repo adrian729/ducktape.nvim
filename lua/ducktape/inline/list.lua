@@ -1,16 +1,5 @@
--- Inline list: every inline edit currently in play — requests still running, and finished ones
--- whose diff nobody has decided on yet — with the keys to settle them from here.
---
--- Deliberately a float rather than a Telescope picker, unlike the chat list. This view redraws
--- itself while it is open, and Picker:refresh re-runs the finder, which re-selects the default
--- row — so a live list would drag the cursor off whatever was being read, ten times a second.
--- There is nothing to fuzzy-search either: a handful of rows at most, and they are picked out by
--- where they are rather than by name. Same float idiom as the status panel and the options step.
---
--- Settling a diff from here is safe because every step of it is buffer-scoped: codecompanion's
--- resolve_diff works on diff_ui.bufnr, DiffUI:close is a no-op for an inline diff, and our own
--- accept/reject handlers address the buffer explicitly. None of it reads the current window, so
--- the target buffer does not even have to be on screen.
+-- Inline list: running requests and finished diffs. A float rather than Telescope because this
+-- redraws live; Telescope's refresh resets the cursor.
 
 local M = {}
 
@@ -21,28 +10,20 @@ local render = ui.render
 local pad = ui.pad
 local ellipsise = ui.ellipsise
 
----How long a row keeps saying "finished" after its request was seen to land. Long enough to
----catch the eye of someone reading another row, short enough that it is gone by the next look.
+---How long a row keeps saying "finished" after it lands.
 local FLASH_MS = 3000
 
--- Room for "99m59s", which no inline request can reach — every transport times out inside two
--- minutes. Fixed rather than measured across the rows on show: a column sized to the longest
--- value present would widen the moment a request ticked from 9s to 10s, sliding everything to
--- its right by a column while being read.
+-- Fixed width avoids twitching as the seconds column ticks over.
 local ELAPSED_WIDTH = 6
 
--- Caps, past which the cell is shortened. Both hold long real values — a model name and a path
--- from the repo root — and neither is worth the whole window.
+-- Caps for cells that can hold long real values.
 local MODEL_CAP = 30
 local LOCATION_CAP = 40
 
--- Below this there is no point showing the prompt at all: two words and an ellipsis say less
--- than the space they cost.
+-- Below this, the prompt says less than the space it costs.
 local MIN_INSTRUCTION = 10
 
--- How far these two columns can be squeezed before they stop saying anything. A path shortened
--- to 18 still ends in a file name and a line number; a model shortened to 14 still names the
--- provider and enough of the model to tell two of them apart.
+-- Minimum useful lengths: a path still names a file; a model still names the provider.
 local LOCATION_MIN = 18
 local MODEL_MIN = 14
 
@@ -50,8 +31,7 @@ local STATE = {
 	thinking = { label = "thinking", hl = "DucktapeListStarting" },
 	finished = { marker = "◆", label = "finished", hl = "DucktapeListCurrent" },
 	review = { marker = "◆", label = "review", hl = "DucktapeListReady" },
-	-- A reply that could not be applied: prose, or a refusal. Nothing is pending in the buffer, so
-	-- there is nothing to accept — it is read, taken into a chat, re-asked or dismissed.
+	-- Prose/failed: nothing is pending in the buffer, so it is read, re-asked or dismissed.
 	prose = { marker = "◆", label = "answered", hl = "DucktapeListReady" },
 	failed = { marker = "✖", label = "failed", hl = "DucktapeListDead" },
 }
@@ -62,13 +42,8 @@ for _, state in pairs(STATE) do
 end
 
 ---The three progressively shorter border footers, widest first.
----
----Widest first because the window is at least as wide as whichever of these fits, and nvim
----truncates a border footer to the window silently.
----
----Built from the bindings rather than written out. Spelling out all six keys cost 94 cells, and
----since the window is sized to fit its footer that made every list at least 96 wide — wider than
----the rows need. The border carries the three verbs and points at the help key for the rest.
+---Widest first because nvim truncates a border footer to the window silently.
+---Built from bindings so a remapped panel documents itself.
 ---@return string[]
 local function FOOTERS()
 	local keys = require("ducktape.keys")
@@ -83,10 +58,7 @@ local function FOOTERS()
 	}
 end
 
----Everything the list can do, and what the markers in it mean.
----
----Not on the border, because the border is clipped to the window without warning and this has to be
----complete. Every key is named from its binding, so a remapped panel documents itself.
+---Everything the list can do, and what the markers mean.
 ---@return table[]
 local function HELP()
 	local keys = require("ducktape.keys")
@@ -130,8 +102,7 @@ local function HELP()
 	}
 end
 
--- The help overlay, when it is up. Separate from `view` because it outlives a redraw and is torn
--- down with the list rather than with a frame.
+-- The help overlay, when it is up. Separate from `view` because it outlives redraws.
 local help = nil
 
 local function help_is_open()
@@ -148,14 +119,10 @@ end
 local view = {
 	win = nil,
 	buf = nil,
-	-- The row under the cursor, and the entry it belongs to. Both, because the cursor follows
-	-- the entry while it exists and falls back to the row's position when it stops existing.
 	index = 1,
 	order = nil,
 	frame = 1,
-	-- order → the kind last drawn, and when a change of kind was noticed. A request turning
-	-- into a diff is the one transition worth announcing, and it can only be recognised by
-	-- having seen the row before.
+	-- order → last seen kind; a request turning into a diff is the transition worth flashing.
 	kinds = {},
 	flashed = {},
 	timer = nil,
@@ -169,10 +136,6 @@ local view = {
 
 local ns = api.nvim_create_namespace("DucktapeInlineList")
 
---=============================================================================
--- Cells
---=============================================================================
-
 ---@param ms number
 ---@return string
 local function elapsed_text(ms)
@@ -183,7 +146,7 @@ local function elapsed_text(ms)
 	return ("%dm%02ds"):format(math.floor(secs / 60), secs % 60)
 end
 
----Right-align, so the digits of the seconds line up rather than the leading edge of the number.
+---Right-align, so the digits line up.
 ---@param text string
 ---@param width number
 ---@return string
@@ -191,8 +154,7 @@ local function align_right(text, width)
 	return string.rep(" ", math.max(width - vim.fn.strdisplaywidth(text), 0)) .. text
 end
 
----Keep the end of a path when it has to be cut: the file name says more about where an edit is
----than the directories above it do.
+---Keep the end of a path when it has to be cut.
 ---@param text string
 ---@param width number
 ---@return string
@@ -222,9 +184,7 @@ local function state_of(entry, now)
 	return STATE.review, STATE.review.marker
 end
 
----Where the edit is, or that it is nowhere any more. Rare now that a range with a request on it
----is put back when it is deleted: this shows for the tick between the deletion and the restore,
----or for a range the restore could not recover — and that one cancels the request outright.
+---Where the edit is, or that it is nowhere any more.
 ---@param entry table
 ---@return string text, string hl
 local function location_of(entry)
@@ -235,8 +195,7 @@ local function location_of(entry)
 	return shorten_path(("%s:%d"):format(entry.file, s0 + 1), LOCATION_CAP), "DucktapeListDim"
 end
 
----What is worth adding about a row beyond its state: the tool a request is running, or how much
----of the buffer a finished edit touches.
+---What is worth adding about a row beyond its state.
 ---@param entry table
 ---@return string
 local function extra_of(entry)
@@ -261,15 +220,10 @@ end
 ---@param entry table
 ---@return string
 local function instruction_of(entry)
-	-- Collapsed to one line: the prompt float takes whatever was typed, newlines included, and
-	-- a row is one line high.
+	-- Collapsed to one line: a row is one line high.
 	local text = vim.trim((entry.instruction or ""):gsub("%s+", " "))
 	return text ~= "" and text or "(no prompt recorded)"
 end
-
---=============================================================================
--- Rendering
---=============================================================================
 
 ---@param entries table[]
 ---@return number
@@ -297,8 +251,7 @@ local function natural_width(entries)
 	return widest
 end
 
----Everything up to and including the gap that follows the location column: the part of a row
----whose width is decided by the columns rather than by the space left over.
+---Everything up to and including the gap after the location column.
 ---@param plan table
 ---@return number
 local function fixed_width(plan)
@@ -312,21 +265,13 @@ local function fixed_width(plan)
 end
 
 ---How much of a row fits, and so what it shows.
----
----The marker and where the edit is come first — without those a row cannot be acted on at all —
----and the prompt second, because it is the only thing on the row that cannot be worked out from
----the rest of it. Everything else gives up space to it, in order of how little is lost by
----shortening or dropping it, and each concession is only made if the prompt still has nowhere to
----go without it.
----
----The note at the end of the row is settled last and never costs another column: a tool name or
----a hunk count is worth having, but not at the price of knowing which model is running.
+---Marker and location come first; the prompt is last to drop. Concessions are made only until
+---the prompt has room.
 ---@param entries table[]
 ---@param width number
 ---@return table
 local function layout(entries, width)
-	-- Measured across the rows on show, so the columns line up with each other. These cells only
-	-- change when a row does, unlike the clock, so sizing from them cannot make the list twitch.
+	-- Measured across rows so the columns line up.
 	local plan = { state = true, elapsed = true, model = 0, location = 0, instruction = 0, extra = 0 }
 	local extra_width = 0
 	for _, entry in ipairs(entries) do
@@ -364,8 +309,6 @@ local function layout(entries, width)
 	end
 
 	if room() < MIN_INSTRUCTION then
-		-- Nothing left to give up. The location takes whatever there is, since a row naming
-		-- neither the file nor the prompt would be unactionable.
 		if fixed_width(plan) > width then
 			plan.location = math.max(width - (fixed_width(plan) - plan.location), 1)
 		end
@@ -434,8 +377,7 @@ local function lines_for(entries, now, plan)
 	return out, all_highlights
 end
 
----What the border says, in as much detail as it has room for. Shortened rather than left to be
----clipped: nvim truncates an over-long title to the window without a word about it.
+---What the border says, shortened to fit. nvim truncates an over-long title silently.
 ---@param entries table[]
 ---@param width number
 ---@return string
@@ -485,8 +427,7 @@ local function title_for(entries, width)
 	return ""
 end
 
----Follow the entry under the cursor rather than the row it happens to be on, and notice a
----request turning into a diff on the way.
+---Follow the entry under the cursor, and flash a request turning into a diff.
 ---@param entries table[]
 ---@param now number
 local function track(entries, now)
@@ -505,8 +446,7 @@ local function track(entries, now)
 	if found then
 		view.index = found
 	else
-		-- The entry the cursor was on has gone. Hold the position it was in, so settling one
-		-- edit leaves the cursor on whatever took its place instead of jumping to the top.
+		-- Hold the cursor row so settling one edit leaves it on whatever took its place.
 		view.index = math.max(math.min(view.index, #entries), math.min(1, #entries))
 	end
 	view.order = entries[view.index] and entries[view.index].order or nil
@@ -541,9 +481,7 @@ local function draw()
 		return
 	end
 
-	-- A terminal shrunk under the list would otherwise leave a float hanging off the screen. Only
-	-- ever narrowed, never widened back: the width is chosen from the rows that were on show when
-	-- it opened, and re-measuring would resize the box under whoever is reading it.
+	-- Only ever narrow: re-measuring per frame would resize the box under a reader.
 	local resized = false
 	local max_width = math.max(vim.o.columns - 4, 20)
 	if view.width > max_width then
@@ -552,9 +490,7 @@ local function draw()
 		resized = true
 	end
 
-	-- Only when it actually changed: reconfiguring a float on every frame is churn the terminal
-	-- can see. The height grows and shrinks with the list, from a top edge that stays put —
-	-- re-centring would slide the whole box up the screen as rows were settled.
+	-- Reconfigure only when changed; height grows from a fixed top edge.
 	local height = math.max(math.min(#lines, vim.o.lines - 6), 1)
 	local row = math.min(view.row, math.max(vim.o.lines - height - 3, 0))
 	if row ~= view.row then
@@ -577,19 +513,13 @@ local function draw()
 	pcall(api.nvim_win_set_cursor, view.win, { math.max(view.index, 1), 0 })
 end
 
---=============================================================================
--- Actions
---=============================================================================
-
----The entry the user is looking at. Taken from the last frame drawn rather than from a fresh
----read, so a key always acts on the row that was under the cursor when it was pressed.
+---The entry the user is looking at. Taken from the last frame drawn.
 ---@return table|nil
 local function selected()
 	return view.entries[view.index]
 end
 
----Is the entry still the thing it was? A tenth of a second is long enough for a request to have
----landed, and cancelling one that already has would report something that did not happen.
+---Is the entry still the thing it was?
 ---@param entry table
 ---@return boolean
 local function still_listed(entry)
@@ -608,8 +538,6 @@ local function settle(action)
 	end
 	if entry.kind == "prose" or entry.kind == "failed" then
 		if action == "accept" and entry.kind == "prose" then
-			-- The nearest thing to accepting a reply that is not code: take it somewhere it can be
-			-- talked about.
 			require("ducktape.inline").to_chat(entry.waiting)
 			ui.say(("[ducktape] opened %s in a chat"):format(entry.file))
 			return draw()
@@ -625,8 +553,7 @@ local function settle(action)
 		return ui.say("[ducktape] that one is still running — x cancels it", vim.log.levels.WARN)
 	end
 	-- `resolved` as well as the registry: a diff settled in the buffer itself is refused by
-	-- codecompanion rather than applied twice, and reporting success on top of that would be a
-	-- lie about what the buffer now holds.
+	-- codecompanion rather than applied twice.
 	if not still_listed(entry) or not (entry.diff.ui and not entry.diff.ui.resolved) then
 		return ui.say("[ducktape] that one has already been settled", vim.log.levels.INFO)
 	end
@@ -641,9 +568,7 @@ local function settle(action)
 	draw()
 end
 
----Discard the entry under the cursor, whichever half of its life it is in: cancel it if it is
----running, reject it if it has answered. One key for "make this go away", since which state a row
----is in is exactly what changes on its own while the list is open.
+---Discard the entry under the cursor, whichever half of its life it is in.
 local function discard_selected()
 	local entry = selected()
 	if not entry then
@@ -653,8 +578,7 @@ local function discard_selected()
 		return settle("reject")
 	end
 	if not still_listed(entry) then
-		-- It landed in the last frame, so it is a diff now rather than a request. Rejecting is
-		-- what x means for one of those, so redraw and let the next press find it.
+		-- It landed in the last frame; redraw so the next press finds the diff.
 		draw()
 		return ui.say("[ducktape] that one just landed — x again rejects it", vim.log.levels.INFO)
 	end
@@ -663,20 +587,14 @@ local function discard_selected()
 	draw()
 end
 
----Settle every diff in the list, wherever it belongs — the counterpart to X, which cancels every
----request the same way.
----
----The files are named in the report rather than just counted: this reaches buffers that are not on
----screen, and knowing which ones changed is what makes the result checkable afterwards.
+---Settle every diff in the list.
 ---@param action "accept"|"reject"
 local function settle_every(action)
 	local inline = require("ducktape.inline")
 	local settled, files, running, unread = 0, {}, 0, 0
 	for _, entry in ipairs(inline.list()) do
 		if entry.kind == "prose" or entry.kind == "failed" then
-			-- Left alone on purpose. These are the only entries holding text that exists nowhere
-			-- else, so a key meaning "settle the diffs" must not be the thing that throws away an
-			-- explanation nobody has read.
+			-- Left alone: these hold text that exists nowhere else.
 			unread = unread + 1
 		elseif entry.kind ~= "diff" then
 			running = running + 1
@@ -722,12 +640,7 @@ local function settle_every(action)
 	draw()
 end
 
----Clear the list out entirely: cancel what is running, reject what has answered, dismiss what was
----never read. The counterpart to A, which keeps the answers instead.
----
----Unread replies go too. This is the "I am done with all of it" key, and one that left rows behind
----would need a second key to finish the job — the count in the message is what says a reply was
----among them.
+---Clear the list out entirely: cancel running, reject answered, dismiss unread.
 local function discard_every()
 	local inline = require("ducktape.inline")
 	local cancelled, rejected, dismissed = 0, 0, 0
@@ -761,11 +674,7 @@ local function discard_every()
 	draw()
 end
 
----Get rid of what is on this row and ask the same thing again, with the instruction pre-filled.
----
----Works on every kind of row, which is what makes it worth a key rather than a special case: a diff
----is rejected first, a running request cancelled, a reply dismissed. The list closes because the
----prompt float replaces it, and whatever happens next is reported there.
+---Discard the row and ask the same thing again, with the instruction pre-filled.
 local function retry()
 	local entry = selected()
 	if not entry then
@@ -775,10 +684,7 @@ local function retry()
 	require("ducktape.inline").ask_again_prompt(entry)
 end
 
----Leave the list and go to the edit itself, which is where a diff is read and where g2/g3 and
----the hunk motions already live. A reply that came to nothing has nothing to jump *to*, so it
----opens the reply instead — which is the one place a float taking focus is right, since it was
----asked for.
+---Leave the list and go to the edit itself. A reply that came to nothing is opened instead.
 local function jump()
 	local entry = selected()
 	if not entry then
@@ -817,10 +723,6 @@ local function move(delta)
 	draw()
 end
 
---=============================================================================
--- Window
---=============================================================================
-
 function M.close()
 	if view.timer then
 		local timer = view.timer
@@ -839,7 +741,6 @@ function M.close()
 	view.win, view.buf = nil, nil
 	view.entries = {}
 	view.height, view.title = nil, nil
-	-- A plain float of its own, so nothing else would take it down with the list it documents.
 	close_help()
 end
 
@@ -851,24 +752,18 @@ end
 local function open()
 	local entries = require("ducktape.inline").list()
 
-	-- Opens even with nothing to show, saying so in the window. It used to answer with a message on
-	-- the command line, which reads as "the key did nothing" to anyone not watching that line — and
-	-- the window is where the answer was expected. The empty state is written for anyway: settling
-	-- the last row from in here leaves the list standing and says the same thing.
+	-- Open even when empty; an empty list is a normal state once the last row is settled.
 	ui.ensure_highlights()
-	M.close() -- reopening rather than stacking, if one is somehow still up
+	M.close()
 
 	view.index, view.order, view.frame = 1, entries[1] and entries[1].order or nil, 1
 	view.kinds, view.flashed = {}, {}
-	-- Anything already finished when the list opened is not news, so it says "review" from the
-	-- start rather than flashing at someone who has only just looked.
+	-- Already-finished entries are not news; they show "review" from the start.
 	for _, entry in ipairs(entries) do
 		view.kinds[entry.order] = entry.kind
 	end
 
-	-- Sized once, from the rows on show: the window has to be at least as wide as the footer or
-	-- nvim clips it without saying so, and re-measuring per frame would resize the box under a
-	-- reader every time a new request arrived.
+	-- Size once from the rows on show; the footer must fit or nvim clips it silently.
 	local footers = FOOTERS()
 	local footer = footers[#footers]
 	for _, candidate in ipairs(footers) do
@@ -897,8 +792,7 @@ local function open()
 		footer = footer,
 		footer_pos = "center",
 	})
-	-- style = "minimal" turns cursorline off, and the row under the cursor is what every key here
-	-- acts on.
+	-- style = "minimal" turns cursorline off.
 	vim.wo[view.win].cursorline = true
 	vim.bo[view.buf].modifiable = false
 
@@ -909,9 +803,7 @@ local function open()
 		help = ui.help(HELP(), { title = " Inline list ", key_column = 11 })
 	end
 
-	-- <Esc> and q are what a hand reaches for to dismiss a popup, and both otherwise close the
-	-- list — which would take the list away along with the help it was explaining. While the
-	-- overlay is up they dismiss it and stop there.
+	-- While the help overlay is up, dismiss it instead of closing the list.
 	local function close_or_dismiss_help()
 		if help_is_open() then
 			return close_help()
@@ -927,14 +819,7 @@ local function open()
 		up = function()
 			move(-1)
 		end,
-		-- Three verbs, one each: keep it, get rid of it, go again.
-		--
-		-- There is no reject key, because there was nothing for it to do that discard did not already
-		-- do — on a diff both rejected, on a reply both dismissed, and on a running request retry could
-		-- only point at discard. So discard absorbed it, and retry went to the thing that had no key.
-		--
-		-- g2/g3 come along as aliases because they are what settles a diff in the buffer itself, and
-		-- g3 lands on discard, which is what it means there.
+		-- Three verbs: keep it, get rid of it, go again. g2/g3 tag along as aliases.
 		accept = function()
 			settle("accept")
 		end,
@@ -945,9 +830,7 @@ local function open()
 		close = close_or_dismiss_help,
 	})
 
-	-- Uppercase is "all of them", the same way X is to x. Derived from whatever the single-row keys
-	-- are bound to, so a remapped panel keeps the relationship instead of stranding these on the
-	-- shipped letters.
+	-- Uppercase is "all of them", derived from the single-row keys.
 	local function upper(action, fn)
 		for _, lhs in ipairs(keys.panel("inline_list", action)) do
 			if #lhs == 1 and lhs:match("%a") then
@@ -960,8 +843,6 @@ local function open()
 	end)
 	upper("discard", discard_every)
 	upper("retry", function()
-		-- Bound to say so rather than left silent: a key that does nothing reads as a dropped
-		-- keypress, and this one used to mean something.
 		ui.say(
 			"[ducktape] there is no ask-again-for-everything — "
 				.. keys.panel_label("inline_list", "retry")
@@ -970,13 +851,8 @@ local function open()
 		)
 	end)
 
-	-- Moving away closes it, which is also what guarantees the redraw timer never outlives the
-	-- window it was drawing into.
-	--
-	-- Whether focus really left is answered a tick later rather than taken from the event: nvim
-	-- leaves and re-enters a float while laying windows out again after the terminal is resized,
-	-- and taking WinLeave at face value would tear the list down every time its own window
-	-- changed size. Not `once`, since that first leave may well have been one of those.
+	-- Close when focus really leaves. Defer the check: nvim fires WinLeave while relayouting
+	-- after a resize, and acting on it would tear the list down.
 	api.nvim_create_autocmd("WinLeave", {
 		buffer = view.buf,
 		callback = function()
@@ -990,8 +866,7 @@ local function open()
 
 	draw()
 
-	-- The same tempo as the per-request spinner in the buffer, so a request that is being watched
-	-- from both places animates as one thing.
+	-- Same tempo as the per-request spinner in the buffer.
 	view.timer = vim.uv.new_timer()
 	view.timer:start(
 		100,

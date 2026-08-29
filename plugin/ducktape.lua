@@ -1,6 +1,5 @@
--- Everything that has to exist before the plugin is loaded: the mappings, the command, and the
--- statusline segment. Nothing here requires the plugin itself — the requires live inside the
--- callbacks, so pressing a key is what pulls it in (:h lua-plugin-lazy).
+-- Mappings, command, and statusline segment are set up before the core loads so keys exist
+-- even when the plugin is deferred (:h lua-plugin-lazy).
 
 if vim.g.loaded_ducktape then
 	return
@@ -13,8 +12,7 @@ end
 
 local keys = require("ducktape.keys")
 
----What each action does. The require is inside the function, and `bootstrap()` runs first so the
----action cannot reach an agent before the adapters that deny writes are installed.
+---Action registry. Requires are deferred so bootstrap runs before any agent is reached.
 ---@type table<string, fun()>
 local actions = {
 	chat_toggle = function()
@@ -76,8 +74,7 @@ local actions = {
 	end,
 }
 
--- A <Plug> mapping per action, so a user can bind their own key in one line without a setup call
--- and without an error if the plugin is disabled (:h lua-plugin-keymaps).
+-- <Plug> mappings let users bind actions without calling setup (:h lua-plugin-keymaps).
 for action, fn in pairs(actions) do
 	local name = ("<Plug>(Ducktape%s)"):format(action
 		:gsub("_(%l)", function(c)
@@ -92,11 +89,8 @@ for action, fn in pairs(actions) do
 
 	if keys.globals_enabled() then
 		local lhs = keys.lhs(action)
-		-- Two different questions, and only asking one of them is the classic mistake here.
-		-- `hasmapto` is "has the user already bound this action to a key of their own?", since it
-		-- searches the *rhs* of existing mappings. `maparg` is "is this key already taken?".
-		-- Without the second, whichever of us ran last would win, which is a coin flip rather
-		-- than a promise that their mapping survives.
+		-- hasmapto checks rhs (user bound this action); maparg checks lhs (key taken).
+		-- Both are needed so ducktape doesn't clobber user mappings.
 		local claimed_action = vim.fn.hasmapto(name) == 1
 		local claimed_key = lhs and vim.fn.maparg(lhs, "n") ~= ""
 		if lhs and not claimed_action and not claimed_key then
@@ -105,27 +99,19 @@ for action, fn in pairs(actions) do
 	end
 end
 
--- The inline counters. Injected here rather than from setup so the segment is present on the very
--- first redraw, as it was when this lived in the user's own options file — deferring it to
--- codecompanion's load would leave a window with no segment at all.
---
--- Appended into whatever nvim's default already is rather than replacing it. That default is not
--- empty on current versions — it carries the terminal exit code, vim.ui.progress_status(), the busy
--- indicator, vim.diagnostic.status() and the ruler — and writing the documented "equivalent" over
--- it would quietly throw all of that away. The expression itself is evaluated at redraw, so nothing
--- is required until there is something to show.
+-- Inject the statusline segment early so it appears on the first redraw. Append to nvim's default
+-- rather than replacing it, which would discard existing segments.
 if require("ducktape.config").get().statusline.enabled then
 	local segment = "%{%v:lua.require'ducktape.statusline'.render()%}"
 	local current = vim.o.statusline
 	if not current:find("ducktape.statusline", 1, true) then
-		-- Just left of the ruler, so it sits at the right-hand end of the real content. Appended
-		-- if that chunk is ever renamed, which puts it in the wrong place but never breaks the bar.
+		-- Place just left of the ruler when present.
 		local at = current:find("%{% &ruler ?", 1, true)
 		vim.o.statusline = at and (current:sub(1, at - 1) .. segment .. current:sub(at)) or (current .. segment)
 	end
 end
 
--- One command with subcommands rather than several top-level ones (:h lua-plugin-keymaps).
+-- One command with subcommands (:h lua-plugin-keymaps).
 local subcommands = {
 	pool = function()
 		require("ducktape.debug").pool_status()

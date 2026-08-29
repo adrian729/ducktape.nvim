@@ -32,7 +32,6 @@ else
 		out,
 		"contents: " .. vim.inspect(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false))
 	)
-	-- every key, on a list with no rows
 	local keys = { "a", "r", "x", "A", "X", "j", "k", "<CR>", "g2", "g3", "?" }
 	local maps = {}
 	for _, m in ipairs(vim.api.nvim_buf_get_keymap(vim.api.nvim_win_get_buf(win), "n")) do

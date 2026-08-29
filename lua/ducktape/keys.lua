@@ -1,9 +1,4 @@
--- The one place that knows what a key is called.
---
--- Messages name keys — "<leader>cx cancels it", "<leader>cL lists them all", the diff banner, the
--- chat footer, the chat list's help overlay. Those strings used to hardcode the defaults, which
--- was true until someone remapped, at which point the help lied. They resolve through here now, so
--- a remap carries into everything that mentions it.
+-- Resolve keymap names so messages and help overlays stay honest after a remap.
 
 local M = {}
 
@@ -12,11 +7,8 @@ local function keymaps()
 	return require("ducktape.config").get().keymaps or {}
 end
 
----The left-hand side configured for an action, or nil when the action is unknown.
----
----Falls back to the shipped default rather than returning nil for a known action that a user set
----to `false`: a suppressed keymap still has a name, and a message interpolating `nil` would be
----worse than one naming a key that happens not to be bound.
+---Left-hand side for an action, or nil if unknown. Falls back to the shipped default so a
+---suppressed keymap still has a name to show in messages.
 ---@param action string
 ---@return string|nil
 function M.lhs(action)
@@ -31,15 +23,12 @@ function M.lhs(action)
 	return type(shipped) == "table" and shipped[1] or nil
 end
 
----What to print for an action. Same as `lhs`, and named separately so call sites read as prose
----rather than as lookups.
 ---@param action string
 ---@return string
 function M.label(action)
 	return M.lhs(action) or "?"
 end
 
----The modes an action is bound in.
 ---@param action string
 ---@return string[]
 function M.modes(action)
@@ -48,7 +37,6 @@ function M.modes(action)
 	return from or { "n" }
 end
 
----The description an action carries in `:map`.
 ---@param action string
 ---@return string|nil
 function M.desc(action)
@@ -56,17 +44,13 @@ function M.desc(action)
 	return type(entry) == "table" and entry.desc or nil
 end
 
----Are the global `<leader>c*` defaults wanted at all?
 ---@return boolean
 function M.globals_enabled()
 	return keymaps().globals ~= false
 end
 
----Every action that is a global keymap, i.e. everything except the buffer-local diff set.
----
----Identified by shape rather than by exclusion list: an action's entry is a keymap spec, so it
----carries its left-hand side at `[1]`. `panels` is a table of tables and would otherwise be counted
----as a nineteenth action, which is how this went wrong once already.
+---Every global action except the buffer-local diff set. Identified by shape (`[1]` is the lhs);
+---`panels` is a nested table and would otherwise be counted.
 ---@return string[]
 function M.global_actions()
 	local out = {}
@@ -80,15 +64,8 @@ function M.global_actions()
 	return out
 end
 
---=============================================================================
--- Panel keys
---=============================================================================
-
----The keys bound to an action inside one of this plugin's own windows.
----
----`:h lua-plugin-keymaps` calls buffer-local maps in plugin-owned floats uncontroversial, and they
----are — but `a`, `r` and `x` sit on strong muscle memory, so they resolve through here. A user table
----replaces the shipped list for that action only; everything they did not name keeps its default.
+---Keys bound to an action inside one of this plugin's own windows. A user table replaces the
+---shipped list for that action only.
 ---@param panel string
 ---@param action string
 ---@return string[]
@@ -104,11 +81,10 @@ function M.panel(panel, action)
 	return type(shipped) == "table" and shipped or {}
 end
 
----Bind every key an action has, in one window.
 ---@param panel string
 ---@param buf number
----@param map table<string, fun()> action name → callback
----@param opts? table Extra options for vim.keymap.set
+---@param map table<string, fun()>
+---@param opts? table
 function M.bind_panel(panel, buf, map, opts)
 	for action, fn in pairs(map) do
 		for _, lhs in ipairs(M.panel(panel, action)) do
@@ -117,7 +93,6 @@ function M.bind_panel(panel, buf, map, opts)
 	end
 end
 
----The first key an action is bound to in a panel, for prose that names it.
 ---@param panel string
 ---@param action string
 ---@return string

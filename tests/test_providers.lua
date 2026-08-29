@@ -1,13 +1,6 @@
--- Adding a provider nobody wrote code for.
---
--- The suite this exists for: `providers` looked like a table you could add a key to, and was not.
--- A fourth provider was accepted by `set_provider`, then routed to *another provider's* relay,
--- given no write defence, never asked for its models, and shown in no picker. Two of those failed
--- silently and one of them threw.
---
--- So every assertion below is about a provider this code has never heard of. `gemini_cli` and
--- `openai_compatible` are used as the adapter names because codecompanion ships both as files but
--- registers neither, which makes them the closest thing to a genuinely third-party adapter.
+-- Adding a provider the code has never heard of. `providers` used to accept a new key but then
+-- routed to another provider's relay, skipped write defence, skipped model discovery, and hid from
+-- the picker. `gemini_cli` and `openai_compatible` are genuinely third-party adapter names.
 
 local REPORT = "/tmp/providers.out"
 local passed, failed, lines = 0, 0, {}
@@ -38,8 +31,7 @@ vim.env.XDG_STATE_HOME = vim.fn.tempname()
 local config = require("ducktape.config")
 local providers = require("ducktape.providers")
 
--- A minimal-but-complete ACP provider and a minimal-but-complete HTTP one. Neither names a guard,
--- which is the interesting part: the ACP one has to get a derived defence rather than none.
+-- Neither names a guard, so the ACP provider must get a derived defence rather than none.
 local GEMINI = {
 	label = "Gemini",
 	kind = "acp",
@@ -79,7 +71,7 @@ eq("gemini is acp", providers.kind("gemini"), "acp")
 eq("localai is http", providers.kind("localai"), "http")
 
 section("nothing throws on a provider with no `defaults` entry of its own")
--- Every one of these used to be `attempt to index field 'opts' (a nil value)`.
+-- These all used to be `attempt to index field 'opts' (a nil value)`.
 ok(providers.set_provider("inline", "gemini"), "set_provider accepts it")
 ok(
 	pcall(function()
@@ -91,14 +83,13 @@ ok(providers.set_option("inline", "model", "gemini-3-pro"), "set_option works")
 eq("and the value stuck", providers.current("inline").opts.model, "gemini-3-pro")
 
 section("its inline transport is its own, never another provider's relay")
--- The bug: an unknown provider fell through to `deep and "acp" or "relay"`, which is opencode's
--- relay script. The request went to a different vendor entirely.
+-- Unknown providers used to fall through to opencode's relay script.
 eq("gemini shallow inline is its own agent", providers.transport("gemini", false), "acp")
 eq("gemini deep inline too", providers.transport("gemini", true), "acp")
 eq("localai is http both ways", providers.transport("localai", false), "http")
 eq("localai deep is http as well", providers.transport("localai", true), "http")
 ok(providers.relay("gemini") == nil, "gemini has no relay")
--- The shipped provider that does have one still uses it, so the default did not swallow the case.
+-- The shipped provider with a relay still uses it; the default did not swallow the unknown case.
 eq("opencode still relays the shallow path", providers.transport("opencode", false), "relay")
 eq("and uses acp for the deep one", providers.transport("opencode", true), "acp")
 
@@ -108,7 +99,7 @@ ok(guard.required == nil, "the spec names no required mode")
 ok(guard.derive, "so one is derived")
 ok(not guard.unguarded, "and it is not unguarded")
 
--- A stand-in for a live session: `derive_guard` reads exactly this shape off a real connection.
+-- `derive_guard` reads exactly this shape off a real connection.
 local function fake_conn(modes)
 	return {
 		get_config_options = function()
@@ -138,8 +129,7 @@ local no_modes, why2 = providers.derive_guard("gemini", fake_conn({}))
 ok(no_modes == nil, "an agent advertising no mode option at all yields no guard")
 ok(type(why2) == "string" and #why2 > 0, "and says why")
 
--- A spec that names one keeps it: derivation must not override a deliberate choice. claude's
--- `dontAsk` is the case that matters — `plan` would also be safe and would win a derivation.
+-- A named guard outranks derivation; claude's `dontAsk` matters because `plan` would otherwise win.
 eq(
 	"a named requirement outranks derivation",
 	providers.derive_guard("claude", fake_conn({ "default", "plan", "dontAsk" })).mode,
@@ -147,7 +137,7 @@ eq(
 )
 eq("and is what gets verified", providers.required_session_options("claude").mode, "dontAsk")
 
--- The explicit opt-out, which is the only way to an unguarded inline agent.
+-- Explicit opt-out is the only way to an unguarded inline agent.
 providers.providers.gemini.guard = { unguarded = true }
 local waived = providers.derive_guard("gemini", fake_conn({ "default" }))
 ok(waived ~= nil and vim.tbl_isempty(waived), "guard.unguarded = true waives it deliberately")
@@ -167,11 +157,11 @@ for _, target in ipairs(providers.discoverable()) do
 	keys[target.key] = target.label
 end
 ok(keys["localai:main"] ~= nil, "localai's endpoint is discoverable")
--- `static` has nothing to ask, so it is deliberately absent rather than queried pointlessly.
+-- `static` lists have nothing to ask, so they are deliberately absent rather than queried pointlessly.
 ok(keys["gemini"] == nil, "a static list is not queried")
 eq("its models are still available", #providers.models("gemini"), 2)
 ok(vim.tbl_contains(providers.models("gemini"), "gemini-3-pro"), "and are the ones configured")
--- Regression guard on the shipped keys: the persisted file uses these names.
+-- The persisted file uses these keys; do not rename them.
 ok(keys["ollama:cloud"] ~= nil, "ollama cloud is still discoverable")
 ok(keys["opencode"] ~= nil, "opencode is still discoverable")
 
@@ -199,8 +189,7 @@ ok(providers.model_tier("gemini", "gemini-3-pro") == nil, "an unknown model clai
 eq("a shipped endpoint still reports its tier", providers.model_tier("ollama", "x", "local").label, "free · local")
 
 section("the picker shows them")
--- The failure this catches: build_entries enumerated three providers by hand, so a fourth was
--- selectable everywhere except the picker.
+-- build_entries used to enumerate three providers by hand, so a fourth was hidden from the picker.
 local rendered = {}
 for _, entry in ipairs(require("ducktape.pick")._entries_for_test("inline")) do
 	rendered[entry.value.provider] = true

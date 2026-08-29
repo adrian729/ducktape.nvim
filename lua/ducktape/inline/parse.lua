@@ -1,16 +1,12 @@
--- Turn an arbitrary agent reply into either code to place or a decision not to touch the buffer.
---
--- The bar for refusing is deliberately high. A reply wrongly treated as code costs one keystroke:
--- it lands in a diff the user must accept, and `g3` puts the buffer back. A reply wrongly treated
--- as prose costs the whole request — the edit silently does not happen and the user pays the
--- model's latency again to retry. So prose must be *positively* recognised, never merely inferred
--- from code not being recognised.
+-- Parse an agent reply into replacement code or a decision to leave the buffer alone.
+-- Prose must be positively recognised: a false code classification costs one undo, but a false
+-- prose classification costs a whole retry.
 
 local M = {}
 
 ---@class ducktape.parse.Ctx
----@field filetype string|nil Buffer filetype, so prose files are not judged by code's rules
----@field selection string[]|nil The lines the model was asked to replace
+---@field filetype string|nil Buffer filetype
+---@field selection string[]|nil Original selection lines
 
 ---@class ducktape.parse.Result
 ---@field kind "code"|"prose"|"noop"
@@ -18,24 +14,14 @@ local M = {}
 ---@field text string|nil The reply as prose, when kind ~= "code"
 ---@field reason string|nil Why the reply was not treated as code
 ---@field fenced boolean Whether the code came out of a fenced block
----@field preamble string|nil Prose that sat outside the fenced block, if any
+---@field preamble string|nil Prose outside the fenced block, if any
 
--- Every list below is *shipped* and every one is extensible through `opts.inline.parse`, which adds
--- to it rather than replacing it. Two reasons this needs to be configurable at all:
---
---   * the refusal and lead-in patterns are English, and a model answering in another language would
---     have its refusal applied to the buffer as if it were code;
---   * refusal phrasing is per-model-family, so a provider added later can read differently from
---     either of the two these were measured against.
---
--- `parse.replace = true` uses only what is configured, for anyone who wants the shipped set gone.
+-- Each list is additive through `opts.inline.parse`; `parse.replace = true` opts out.
 
--- A failed tool attempt that nothing parsed, leaking into the message as text. Measured on
--- opencode under a deny-everything permission set; the markup is unfenced.
+-- Tool-call markup that leaked as unfenced text.
 local LEAK_PATTERNS = { "<tool_call>", "</tool_call>", "<function=", "<parameter=" }
 
--- Filetypes whose content *is* prose. Judging a reply here by "does it look like code" rejects
--- every correct answer, because the correct answer is a sentence.
+-- Filetypes whose correct answer is prose.
 local PROSE_FILETYPES = {
 	"",
 	"markdown",
@@ -53,12 +39,10 @@ local PROSE_FILETYPES = {
 	"norg",
 }
 
--- Comment markers. A line starting with one is source, however sentence-like the rest of it is.
--- `"` is vimscript's; `;` needs no entry because it is already in the punctuation test below.
+-- A line starting with one is source, however sentence-like the rest is.
 local COMMENT_PREFIXES = { "--", "//", "#", "/*", "*", "%", "<!--", '"' }
 
--- Openers that only ever begin a refusal or an answer, never a line of source. Anchored to the
--- reply's first non-blank line and matched case-insensitively.
+-- Sentence openers that begin a refusal or answer, matched case-insensitively.
 local REFUSAL_OPENERS = {
 	"^i can'?t%f[%A]",
 	"^i cannot%f[%A]",
@@ -76,16 +60,14 @@ local REFUSAL_OPENERS = {
 	"^there'?s no%f[%A]",
 	"^it'?s not possible%f[%A]",
 	"^that'?s not possible%f[%A]",
-	-- Spelled out rather than `(are |is )?`: Lua patterns have no optional group, and that form
-	-- matches nothing at all — including the plain "no changes needed" it was meant to cover.
+	-- Lua patterns have no optional group; `(are |is )?` matches nothing at all.
 	"^no changes? needed%f[%A]",
 	"^no changes? are needed%f[%A]",
 	"^no changes? is needed%f[%A]",
 	"^nothing to change%f[%A]",
 }
 
--- Lead-ins that carry no information. A preamble made only of these is not an explanation, so
--- surfacing it in a float would be noise.
+-- Preamble phrases that carry no information.
 local LEAD_INS = {
 	"^here'?s?%f[%A]",
 	"^here is%f[%A]",
@@ -99,7 +81,7 @@ local LEAD_INS = {
 	"^done%f[%A]",
 }
 
--- The shipped lists, by the config key that extends each.
+-- Shipped lists, by the config key that extends each.
 local SHIPPED = {
 	refusal_openers = REFUSAL_OPENERS,
 	lead_ins = LEAD_INS,
@@ -108,13 +90,7 @@ local SHIPPED = {
 	leak_patterns = LEAK_PATTERNS,
 }
 
----One of the heuristic lists, with the user's own entries added.
----
----Additive by default: the shipped values are measured, and losing one is a regression nobody would
----notice until an edit silently did not happen. `parse.replace = true` opts out of that.
----
----Not cached. These are consulted a handful of times per reply, config can change mid-session, and a
----latched copy is how the shipped-versus-configured distinction would go stale.
+---One heuristic list, with the user's entries added.
 ---@param key string
 ---@return string[]
 local function list(key)
@@ -128,24 +104,18 @@ local function list(key)
 	if #configured == 0 then
 		return SHIPPED[key]
 	end
-	-- The user's entries first, so a more specific pattern of theirs is tried before a shipped one
-	-- that might match more loosely.
 	local out = vim.list_extend({}, configured)
 	return vim.list_extend(out, SHIPPED[key])
 end
 
----Is this filetype one whose content is prose?
 ---@param filetype string|nil
 ---@return boolean
 local function is_prose_filetype(filetype)
 	return vim.tbl_contains(list("prose_filetypes"), filetype or "")
 end
 
----Split a reply into lines, dropping the empty element a trailing newline leaves behind.
----
----Agents end their replies with a newline; taking that literally appends a blank line to the
----buffer on every single edit. Exactly one is dropped, so a reply that deliberately ends with a
----blank line still gets it.
+---Drop the empty element a trailing newline leaves behind. Agents end replies with a newline,
+---so taking it literally appends a blank line on every edit.
 ---@param text string
 ---@return string[]
 local function split(text)
@@ -156,7 +126,7 @@ local function split(text)
 	return lines
 end
 
----Locate the first fenced block. Returns the body lines, or nil when there is no fence.
+---Locate the first fenced block.
 ---@param lines string[]
 ---@return string[]|nil body
 ---@return string[] outside Lines that were not part of the block
@@ -179,8 +149,7 @@ local function first_fence(lines)
 			break
 		end
 	end
-	-- An unterminated fence means a truncated reply. Take the rest rather than discarding it;
-	-- the caller still gets a chance to reject it as prose.
+	-- An unterminated fence means a truncated reply; the caller can still reject it as prose.
 	close = close or (#lines + 1)
 
 	local body, outside = {}, {}
@@ -225,15 +194,11 @@ local function first_content_line(lines)
 	end
 end
 
----Is there anything about this line that marks it as source rather than a sentence?
----
----One signal is enough. Comment markers are in here because a rewritten comment is the one kind
----of edit that is *both* a sentence and code — `-- Returns the sum of the two arguments.` reads
----as prose by every other measure.
+---Does this line carry a source signal rather than reading as a sentence?
+---Comment markers are included because a rewritten comment is both sentence and code.
 ---@param line string
 ---@return boolean
 local function is_codey(line)
-	-- Indentation is source's own signal; prose replies start at the margin
 	if line:match("^[ \t]") then
 		return true
 	end
@@ -241,7 +206,6 @@ local function is_codey(line)
 	if trimmed == "" then
 		return false
 	end
-	-- Punctuation that appears in code and effectively never in a plain sentence
 	if trimmed:find("[{}%[%]();=<>|\\`]") or trimmed:find("::") then
 		return true
 	end
@@ -265,12 +229,9 @@ local function unstructured(lines)
 	return true
 end
 
----Does this line read as a sentence of English rather than a line of source?
----
----A *positive* test, on purpose. "Not obviously code" is not evidence of prose — most lines of
----most languages match no code pattern at all (`end`, `FROM users`, `fi`). Terminal punctuation
----is required of every line, with no exemption for the last: dropping it there is what made a
----one-line reply like `SELECT id, email FROM users` read as prose.
+---Does this line read as an English sentence rather than source?
+---Terminal punctuation is required on every line; exempting the last made one-line SQL read
+---as prose.
 ---@param line string
 ---@return boolean
 local function is_sentence(line)
@@ -315,9 +276,6 @@ local function matches_any(first, patterns)
 end
 
 ---Does the reply reuse any line of the selection verbatim?
----
----The contract tells the model to reproduce unchanged lines exactly, so a real edit almost always
----shares lines with what it replaces. An answer or a refusal shares none.
 ---@param lines string[]
 ---@param selection string[]|nil
 ---@return boolean
@@ -341,8 +299,7 @@ local function shares_a_line(lines, selection)
 	return false
 end
 
----Prose that sat outside a fence, minus content-free lead-ins. Returns nil when nothing of
----substance is left, so "Here's the updated code:" never gets surfaced as an explanation.
+---Prose outside a fence, minus content-free lead-ins.
 ---@param outside string[]
 ---@return string|nil
 local function meaningful_preamble(outside)
@@ -370,9 +327,7 @@ function M.parse(reply, ctx)
 	local lines = split(reply)
 	local body, outside = first_fence(lines)
 
-	-- Checked outside the fence on purpose. The measured leak is unfenced message text, and
-	-- searching the whole reply would reject legitimate code that merely contains the markup
-	-- as a string — including this repository's own source.
+	-- Search outside the fence only: legitimate code can contain the markup as a string.
 	local marker = find_leak(outside)
 	if marker then
 		return {
@@ -387,8 +342,7 @@ function M.parse(reply, ctx)
 		if is_blank(body) then
 			return { kind = "noop", text = reply, reason = "the reply's code block is empty", fenced = true }
 		end
-		-- A fence is the model saying "this part is code". Take it at its word; the prose around
-		-- it is kept only so a refusal that echoes the selection back can still be explained.
+		-- A fence is the model saying "this part is code".
 		return { kind = "code", lines = body, fenced = true, preamble = meaningful_preamble(outside) }
 	end
 
@@ -397,18 +351,13 @@ function M.parse(reply, ctx)
 	end
 
 	local first = (first_content_line(lines) or ""):lower()
-	-- Both tests below need the reply to carry no code signal anywhere. Nothing that looks even
-	-- slightly like source is ever withheld from the buffer on the strength of a heuristic.
 	local plain = unstructured(lines)
 
-	-- An explicit refusal, in any filetype. Unambiguous enough to act on by itself, and it does
-	-- not require full sentences — a declining model does not always punctuate.
 	if plain and matches_any(first, list("refusal_openers")) then
 		return { kind = "prose", text = reply, reason = "the reply declines to make the edit", fenced = false }
 	end
 
-	-- An answer rather than an edit. Only decidable in a file whose content is code: in a prose
-	-- file the correct replacement *is* a sentence, so this test would reject every good reply.
+	-- Only decide prose in code files: in prose files the correct replacement *is* a sentence.
 	if
 		plain
 		and all_sentences(lines)

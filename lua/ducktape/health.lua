@@ -1,11 +1,5 @@
--- `:checkhealth ducktape`.
---
--- Two things this checks that a plugin health check usually does not, both because they are the
--- ways this plugin actually breaks:
---
---   * that the codecompanion internals it reaches into still resolve. A version floor alone would
---     not catch a refactor, and several of these are read with no pcall around them.
---   * that setup ran to completion, since the adapters that deny agent writes are installed there.
+-- `:checkhealth ducktape`. Checks things that usually slip past a version floor: that the
+-- codecompanion internals we reach into still resolve, and that setup completed.
 
 local M = {}
 
@@ -17,9 +11,6 @@ local error = vim.health.error
 
 local fmt = string.format
 
--- Lua dependencies. Both optional ones are genuinely optional now — telescope improves the pickers
--- rather than gating them, and catppuccin supplies a palette there is a stand-in for — so each says
--- what is actually lost without it rather than that a feature disappears.
 local DEPS = {
 	{ name = "codecompanion.nvim", module = "codecompanion" },
 	{ name = "plenary.nvim", module = "plenary" },
@@ -27,8 +18,6 @@ local DEPS = {
 		name = "telescope.nvim",
 		module = "telescope",
 		optional = true,
-		-- No longer "you lose three features": ducktape.picker falls back to a float it draws
-		-- itself, so what is lost is fuzzy matching and the user's own picker layout.
 		lost = "fuzzy matching and your own picker layout in the chat list and the model pickers; "
 			.. "a built-in float is used instead",
 	},
@@ -40,8 +29,6 @@ local DEPS = {
 	},
 }
 
--- The codecompanion internals this plugin depends on. Unversioned, undocumented, and the realistic
--- source of breakage after an upstream bump.
 local INTERNALS = {
 	{
 		what = "interactions.chat.buf_get_chat / .last_chat",
@@ -54,8 +41,6 @@ local INTERNALS = {
 	{
 		what = "_G.codecompanion_buffers",
 		test = function()
-			-- Required first: the global is created at that module's chunk level, so asking before
-			-- anything has loaded it would report a break that is only a cold start.
 			require("codecompanion.interactions.chat")
 			return type(_G.codecompanion_buffers) == "table"
 		end,
@@ -115,20 +100,12 @@ local INTERNALS = {
 	},
 }
 
--- Programs no plugin manager can install. The provider-specific ones are derived from the registry
--- (see `provider_binaries`), so this is only what the plugin itself needs whatever is configured.
 local BINARIES = {
 	{ name = "git", used_for = "scoping saved chats and resumable sessions to the repository" },
 	{ name = "curl", used_for = "any provider with an HTTP model list" },
 	{ name = "node", used_for = "spawning claude-agent-acp" },
 }
 
----The external programs the configured providers need, one entry per provider.
----
----Derived rather than listed: a provider added through config brings its own agent command, and a
----fixed list could only ever report on the three that ship. The relay itself names nothing here —
----it is native to `inline/relay.lua` and runs on the same `opencode` binary the ACP adapter below
----already reports.
 ---@return table[]
 local function provider_binaries()
 	local providers = require("ducktape.providers")
@@ -136,12 +113,8 @@ local function provider_binaries()
 	for _, provider in ipairs(providers.names()) do
 		local spec = providers.spec(provider) or {}
 
-		-- The agent process behind an ACP adapter, from codecompanion's own adapter definition, so
-		-- it is right even for an adapter this plugin has never heard of.
 		local adapter_name = providers.acp_adapter(provider)
 		if adapter_name then
-			-- Named `resolved` rather than `ok`: `ok` here is vim.health.ok, and shadowing it inside a
-			-- health check is the kind of mistake that reports nothing and looks like a pass.
 			local resolved, adapter = pcall(require("codecompanion.adapters").resolve, adapter_name)
 			local command = resolved and adapter and vim.tbl_get(adapter, "commands", "default")
 			if type(command) == "table" and type(command[1]) == "string" then
@@ -153,7 +126,6 @@ local function provider_binaries()
 			end
 		end
 
-		-- A model list that is a subprocess names its own command.
 		local models = spec.models or {}
 		if models.strategy == "subprocess" and type(models.cmd) == "table" and models.cmd[1] then
 			table.insert(out, {
@@ -166,19 +138,15 @@ local function provider_binaries()
 	return out
 end
 
----Keys a user may set, per route. Checked separately because the routes are not interchangeable:
----`providers` in `vim.g.ducktape` is a real mistake that nothing would otherwise report, since
----plugin/ducktape.lua never reads it and setup never sees it.
 local ALLOWED_G = { keymaps = true, statusline = true }
 
--- Config subtrees whose keys are the user's own names rather than ours, so an unknown key in them is
--- not a typo. Everything else is walked recursively and reported.
+-- Subtrees whose keys are user-defined names, so unknown keys in them are not typos.
 local FREEFORM = {
-	providers = true, -- provider names
-	defaults = true, -- per-scope selections, keyed by provider
-	adapters = true, -- codecompanion adapter names
-	codecompanion = true, -- codecompanion's own config
-	highlights = true, -- highlight group names
+	providers = true,
+	defaults = true,
+	adapters = true,
+	codecompanion = true,
+	highlights = true,
 	["ui.highlights"] = true,
 }
 
@@ -250,8 +218,6 @@ local function check_binaries()
 		end
 	end
 
-	-- The API keys the configured endpoints name, so a provider added through config gets the same
-	-- check rather than only the one this plugin shipped with.
 	local providers = require("ducktape.providers")
 	for _, provider in ipairs(providers.names()) do
 		for endpoint, entry in pairs(providers.endpoints(provider)) do
@@ -276,11 +242,7 @@ local function check_binaries()
 	end
 end
 
----What each provider is, and what keeps its inline path from writing to the filesystem.
----
----The write defence is the plugin's headline promise, and until now nothing reported on it: whether
----a session had actually accepted the mode was visible only as a line in codecompanion.log. This
----says, per provider, which half of the defence it has and whether the last connection verified it.
+---Report each provider and whether its inline write defence is verified.
 local function check_providers()
 	start("ducktape: providers")
 	local providers = require("ducktape.providers")
@@ -303,7 +265,6 @@ local function check_providers()
 			)
 		)
 
-		-- Only ACP inline can write at all; HTTP and relay have no tool plumbing to deny.
 		if shallow == "acp" or deep == "acp" then
 			if withheld[provider] then
 				warn(fmt("%s: inline is withheld — %s", provider, withheld[provider]))
@@ -368,13 +329,7 @@ local function check_config()
 		end
 	end
 
-	-- Walked rather than checked one level deep. `:h lua-plugin-config` puts unknown-field detection
-	-- in health precisely because it is fiddly, and one level is not enough: a typo inside
-	-- `inline.prompt` or `keymaps.panels.status` used to be completely invisible, and `providers`
-	-- being merged wholesale meant `optoins` looked like a legitimate new key.
-	--
-	-- Subtrees whose keys are the user's own names — provider names, adapter names, highlight groups
-	-- — are not walked, because there is nothing to compare them against.
+	-- Walk config recursively, reporting unknown keys. User-named subtrees are skipped.
 	local function walk(value, reference, path)
 		if type(value) ~= "table" or type(reference) ~= "table" then
 			return
@@ -392,8 +347,6 @@ local function check_config()
 	end
 	walk(cfg, shipped, "")
 
-	-- The discovered model lists, because "the picker is empty" and "the picker has not asked yet"
-	-- look identical from the outside.
 	local lists = require("ducktape.model_cache").lists()
 	local at = require("ducktape.model_cache").generated_at()
 	if next(lists) then
@@ -409,8 +362,6 @@ local function check_config()
 				.. "run :Ducktape models"
 		)
 	end
-	-- What the AUTO sentinel currently means, for every provider that has one. Provider-specific
-	-- before, which meant a second provider with a fallback list had nothing reporting on it.
 	for _, provider in ipairs(require("ducktape.providers").names()) do
 		if (require("ducktape.providers").spec(provider) or {}).auto then
 			local auto = require("ducktape.providers").resolve_chat_option_value(
@@ -432,12 +383,7 @@ local function check_config()
 	info(fmt("session scope: %s → %s", tostring(cfg.session.scope), tostring(require("ducktape.scope").key())))
 end
 
----The chat's window rules: registered at all, and what would stop them.
----
----A section of its own because this is the one part of the plugin whose failure says nothing. The
----rule fires from autocmds registered in `setup`, so an nvim left running across an update has none
----of them, and a `:q` in it quietly leaves the chat behind exactly as it did before the feature
----existed.
+---Chat window lifetime rules: registered, and what would stop them.
 local function check_chat_window()
 	start("ducktape: chat window rules")
 
@@ -467,8 +413,6 @@ local function check_chat_window()
 
 	info(fmt("chat windows open: %d", report.chats))
 
-	-- The honest reading of a `:q` that did not quit: nvim refused it, which is its own answer and
-	-- not this plugin declining to act. The chat still goes; what is left is the file and E37.
 	if #report.unsaved > 0 then
 		warn(
 			fmt(

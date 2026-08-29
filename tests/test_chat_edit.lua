@@ -1,4 +1,4 @@
--- ducktape.chat_edit: boundary detection, edit detection, header realignment, and the session swap.
+-- ducktape.chat_edit: boundary detection, edit detection, header realignment, and session swap.
 
 local ok_count, fail_count = 0, 0
 local function check(name, cond, extra)
@@ -18,16 +18,11 @@ local ui = require("ducktape.ui")
 local chat_mod = require("ducktape.chat")
 local constants = require("codecompanion.config").constants
 
--- set_saved_title writes to the real chat_titles.json, so it is stubbed for the whole run and the
--- writes are inspected instead.
+-- Stub set_saved_title to inspect writes instead of touching chat_titles.json.
 local titles = {}
 chat_mod.set_saved_title = function(sid, title)
 	titles[sid] = title
 end
-
---=============================================================================
--- A chat stand-in: everything chat_edit touches, and nothing else.
---=============================================================================
 
 local TWO_TURNS = {
 	"## Me", -- 1
@@ -110,10 +105,6 @@ local function fake_chat(lines, opts)
 	return chat
 end
 
---=============================================================================
--- Where history ends
---=============================================================================
-
 do
 	local chat = fake_chat(TWO_TURNS)
 	edit.rebase(chat)
@@ -123,7 +114,6 @@ do
 end
 
 do
-	-- A fresh chat: one header, nothing above it.
 	local chat = fake_chat({ "## Me", "", "" })
 	edit.rebase(chat)
 	local edited, rows = edit._history_edited(chat)
@@ -132,16 +122,12 @@ do
 end
 
 do
-	-- No user header at all — the parse finds nothing to anchor to.
+	-- No user header: the parse finds nothing to anchor to.
 	local chat = fake_chat({ "just some text" })
 	local edited, rows = edit._history_edited(chat)
 	check("no header, no edit", edited == false)
 	eq("no header, no boundary", rows, nil)
 end
-
---=============================================================================
--- Edit detection
---=============================================================================
 
 do
 	local chat = fake_chat(TWO_TURNS)
@@ -154,8 +140,7 @@ end
 do
 	local chat = fake_chat(TWO_TURNS)
 	edit.rebase(chat)
-	-- Rewording the agent's reply never round-trips through chat.messages, so it has to be the
-	-- buffer text that is watched.
+	-- Rewording the agent's reply never round-trips through chat.messages; watch the buffer text.
 	vim.api.nvim_buf_set_lines(chat.bufnr, 6, 7, false, { "an answer the agent never gave" })
 	chat.parsers.markdown:parse(true)
 	check("rewording the agent's reply is an edit", edit._history_edited(chat) == true)
@@ -164,7 +149,6 @@ end
 do
 	local chat = fake_chat(TWO_TURNS)
 	edit.rebase(chat)
-	-- Typing the new prompt is not an edit, however much of it there is.
 	vim.api.nvim_buf_set_lines(chat.bufnr, 10, 11, false, { "a much longer", "second question", "over three lines" })
 	chat.parsers.markdown:parse(true)
 	local edited, rows = edit._history_edited(chat)
@@ -175,7 +159,7 @@ end
 do
 	local chat = fake_chat(TWO_TURNS)
 	edit.rebase(chat)
-	vim.api.nvim_buf_set_lines(chat.bufnr, 2, 4, false, {}) -- delete two lines of history
+	vim.api.nvim_buf_set_lines(chat.bufnr, 2, 4, false, {})
 	chat.parsers.markdown:parse(true)
 	local edited, rows = edit._history_edited(chat)
 	check("deleting history is an edit", edited == true)
@@ -184,7 +168,7 @@ end
 
 do
 	local chat = fake_chat(TWO_TURNS)
-	-- Never rebased: nothing to compare against, so adopt what is there.
+	-- Without a baseline, adopt what is there.
 	check("no baseline is not an edit", edit._history_edited(chat) == false)
 	vim.api.nvim_buf_set_lines(chat.bufnr, 2, 3, false, { "changed" })
 	chat.parsers.markdown:parse(true)
@@ -200,10 +184,6 @@ do
 	check("forgetting drops the baseline", edit._history_edited(chat) == false)
 end
 
---=============================================================================
--- Reading the conversation back out
---=============================================================================
-
 do
 	local chat = fake_chat(TWO_TURNS)
 	local entries = edit._transcript(chat, 8)
@@ -213,7 +193,7 @@ do
 end
 
 do
-	-- A reply of several blocks is one turn, not three.
+	-- A multi-block reply is one turn, not three.
 	local chat = fake_chat({
 		"## Me",
 		"",
@@ -245,10 +225,6 @@ do
 	eq("nothing above a zero boundary", edit._transcript(chat, 0), {})
 end
 
---=============================================================================
--- Swapping the session
---=============================================================================
-
 do
 	titles = {}
 	local chat = fake_chat(TWO_TURNS)
@@ -274,22 +250,19 @@ do
 	check("the replay stops at the prompt", text:find("second question", 1, true) == nil)
 	check("the chat is no longer treated as resumable", chat._ducktape_resumable == nil)
 
-	-- The title is what the user did not change, so it survives the swap.
+	-- The title is unchanged by the user, so it survives the swap.
 	eq("the chat keeps its title", chat.title, "A chat about colours")
 	eq("and it is pinned against the agent's next auto-title", chat._ducktape_user_title, "A chat about colours")
 	eq("and re-keyed to the new session", titles["new-session"], "A chat about colours")
 
-	-- The name moves with the conversation, so the session left behind loses it — two entries under
-	-- one name would be worse than one falling back to the agent's own auto-title.
+	-- The name moves with the conversation, so the old session loses it rather than duplicating it.
 	eq("the old session loses the name", titles["old-session"], nil)
-	-- Not deleted: a session/delete from the process that had it open is written straight back by
-	-- that same process (measured), so nothing is even attempted.
+	-- Deletion is not attempted: the process that had the session open writes it straight back.
 	eq("no session/delete is attempted", #chat.rpc, 0)
 end
 
 do
-	-- The `provider · model` placeholder is not a name and must not be pinned, or the chat could
-	-- never auto-title itself again.
+	-- The `provider · model` placeholder is not a name and must not be pinned.
 	titles = {}
 	local chat = fake_chat(TWO_TURNS, { title = "claude · opus" })
 	check("the placeholder swap succeeds", edit._fork(chat, 8) == true)
@@ -331,10 +304,6 @@ do
 	check("a swap with nothing to replay fails", edit._fork(chat, 0) == false)
 end
 
---=============================================================================
--- Sending
---=============================================================================
-
 local said
 local real_say = ui.say
 local function stub()
@@ -360,7 +329,7 @@ do
 end
 
 do
-	-- The corruption this fixes: a stale header_line reads the prompt from the wrong window.
+	-- A stale header_line reads the prompt from the wrong window.
 	stub()
 	local chat = fake_chat(TWO_TURNS)
 	edit.rebase(chat)
@@ -393,7 +362,7 @@ do
 end
 
 do
-	-- An edit with no question is nobody's business: this belongs to "edit and ask".
+	-- An edit with no question belongs to "edit and ask", not send.
 	stub()
 	local chat = fake_chat(EMPTY_PROMPT)
 	edit.rebase(chat)
@@ -407,7 +376,7 @@ do
 end
 
 do
-	-- Stock substitutes an empty blank_prompt and submits it, which the API rejects with a 400.
+	-- Stock substitutes an empty blank_prompt and submits it, which the API rejects.
 	stub()
 	local chat = fake_chat(EMPTY_PROMPT)
 	edit.rebase(chat)
@@ -418,7 +387,7 @@ do
 end
 
 do
-	-- A config that gives blank_prompt real text keeps being able to send on an empty prompt.
+	-- A non-empty blank_prompt still allows sending on an empty prompt.
 	stub()
 	local opts = require("codecompanion.config").interactions.chat.opts
 	local saved = opts.blank_prompt
@@ -452,8 +421,7 @@ do
 	vim.api.nvim_buf_set_lines(chat.bufnr, 2, 3, false, { "reworded" })
 	chat.parsers.markdown:parse(true)
 	edit.send(chat)
-	-- Submitting anyway would answer against the conversation the agent still remembers and quietly
-	-- ignore the edit, which is the behaviour this replaces.
+	-- Submitting anyway would answer against the agent's remembered conversation and ignore the edit.
 	eq("a failed swap sends nothing", chat.submitted, 0)
 	check("and says why", said[1] ~= nil and said[1]:find("could not carry", 1, true) ~= nil)
 	unstub()

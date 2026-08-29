@@ -1,5 +1,4 @@
--- What a first keypress produces: bootstrap pulls codecompanion in, the extension runs, and the
--- adapters that deny agent writes are the ones in place.
+-- First keypress: bootstrap loads codecompanion and installs the hardened adapters.
 local pass, fail = 0, 0
 local function check(ok, what)
 	if ok then
@@ -13,7 +12,6 @@ end
 check(package.loaded["codecompanion"] == nil, "codecompanion not loaded before bootstrap")
 check(require("ducktape").is_ready() == false, "not ready before bootstrap")
 
--- Exactly what every keymap does first.
 check(require("ducktape").bootstrap() == true, "bootstrap() succeeded")
 check(package.loaded["codecompanion"] ~= nil, "bootstrap loaded codecompanion")
 check(require("ducktape").is_ready() == true, "setup ran to completion")
@@ -66,7 +64,7 @@ local src = debug.getinfo(send.callback, "S").source
 check(src:find("ducktape", 1, true) ~= nil, "send callback is ours, from " .. src)
 check(send.modes ~= nil, "send kept its own modes")
 
--- Loading ducktape.chat is what registers the exit hook that saves open chats.
+-- ducktape.chat registers the save-on-exit hook.
 local persistence = vim.api.nvim_get_autocmds({ group = "DucktapeChatPersistence" })
 check(#persistence > 0, "chat persistence autocmds registered")
 local events = {}
@@ -88,7 +86,6 @@ check(chat.opts.mode == "default", "chat mode is default")
 
 check(require("ducktape.statusline").render() == "", "statusline renders empty with nothing in play")
 
--- Nothing spawned by any of the above.
 check(vim.tbl_count(require("ducktape.acp_pool").snapshot and {} or {}) == 0, "pool untouched")
 
 print(("wired: %d passed, %d failed"):format(pass, fail))

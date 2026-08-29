@@ -1,12 +1,5 @@
--- What counts as "this project", and what that must not do to saved chats.
---
--- The bug this suite exists for: unifying the two scopes moved saved chats from the working
--- directory onto the repository root, and the migration took the *first* directory it found. With
--- `/repo/frontend` and `/repo/backend` each holding a set, opening one claimed the `/repo` key and
--- left the other's chats in the file with nothing that ever looked them up again.
---
--- So: the default must key chats exactly where it always did, and opting into a coarser key must
--- merge every bucket beneath it rather than pick one.
+-- Scope keys chats where they always were; opting into a coarser key merges every bucket beneath
+-- it. The old unification took the first directory it found, orphaning the other bucket.
 
 local REPORT = "/tmp/scope.out"
 local passed, failed, lines = 0, 0, {}
@@ -43,7 +36,7 @@ eq("resumable sessions are scoped to the repository", config.get().session.scope
 eq("saved chats are scoped to the working directory", config.get().session.chats, "cwd")
 
 section("the two are resolved independently")
--- One cache slot for both would answer the second question with the first's answer.
+-- A shared cache would answer the second query with the first's value.
 scope.clear()
 local cwd = vim.fn.getcwd()
 eq("the chats strategy gives the directory", scope.key("cwd"), cwd)
@@ -64,8 +57,7 @@ eq(
 scope.clear()
 
 section("a coarser chat key merges every bucket beneath it, rather than first-wins")
--- Driven through the real read/write pair rather than a copy of it: this is the logic that lost
--- chats, so a reimplementation in the test would prove nothing.
+-- Drive the real read/write pair; reimplementing the logic in the test would prove nothing.
 local chat = require("ducktape.chat")
 ok(type(chat._read_entries_for_test) == "function", "the read path is reachable")
 

@@ -1,12 +1,5 @@
--- The dependency-free backend: a float this plugin draws itself.
---
--- Exists so that no feature needs a picker plugin installed. It is not a telescope replacement and
--- does not try to be one — but it does filter, because the model picker's whole premise is that
--- typing "opus" gets you there, and a list you can only scroll would lose that.
---
--- Two windows: results above, a one-line prompt below. Filtering is substring, case-insensitive,
--- against each entry's `ordinal` — the same field and the same matcher telescope is given, so a
--- query behaves the same way in both.
+-- Dependency-free float backend. Filters substring, case-insensitive on `ordinal` to match the
+-- telescope backend's behavior.
 
 local M = {}
 
@@ -99,7 +92,7 @@ function M.open(spec)
 		end
 	end
 
-	---Substring, case-insensitive, on `ordinal` — matching what the telescope backend is given.
+	---Same matcher as the telescope backend.
 	local function filter()
 		local q = vim.trim(query():lower())
 		shown = {}
@@ -116,8 +109,7 @@ function M.open(spec)
 		if not handle.is_open() then
 			return
 		end
-		-- The selection is held by value across a refresh: these lists redraw while an agent answers,
-		-- and re-selecting the first row every time would drag the cursor off whatever is being read.
+		-- Preserve selection across refresh so lists updating mid-answer don't reset the cursor.
 		local previous = selected()
 		all = spec.entries()
 		filter()
@@ -148,9 +140,7 @@ function M.open(spec)
 		end
 	end
 
-	-- Geometry: centred, wide enough for the widest row it has, with the prompt on its own line
-	-- immediately below. Sized once — resizing under a reader as rows arrive is worse than a row
-	-- being clipped.
+	-- Centered geometry, sized once to avoid jitter while rows arrive.
 	local width = 40
 	for _, entry in ipairs(all) do
 		width = math.max(width, vim.fn.strdisplaywidth(entry.text or ""))
@@ -193,8 +183,7 @@ function M.open(spec)
 
 	filter()
 
-	-- Typing filters. `TextChanged` as well as `TextChangedI` so a normal-mode edit of the prompt —
-	-- `dd`, a paste — is picked up too.
+	-- TextChanged covers normal-mode edits (dd, paste) as well as insert-mode changes.
 	api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
 		buffer = prompt_buf,
 		callback = filter,
@@ -204,7 +193,6 @@ function M.open(spec)
 		vim.keymap.set(mode or { "i", "n" }, lhs, fn, { buffer = prompt_buf, nowait = true })
 	end
 
-	-- Insert mode from the start, like every other picker: the first thing a hand does is type.
 	map("<C-n>", function()
 		move(1)
 	end)
@@ -219,7 +207,6 @@ function M.open(spec)
 	end)
 	map("<CR>", confirm)
 	map("<C-c>", handle.close)
-	-- Normal mode gets the plain motions as well, for anyone who leaves insert to look around.
 	map("j", function()
 		move(1)
 	end, "n")
@@ -237,8 +224,7 @@ function M.open(spec)
 		ctx = { refresh = handle.refresh, close = handle.close },
 	})
 
-	-- Leaving the prompt closes the whole thing, which is also what guarantees the results window
-	-- never outlives it.
+	-- Closing the prompt closes the results window too.
 	api.nvim_create_autocmd("BufLeave", {
 		buffer = prompt_buf,
 		once = true,

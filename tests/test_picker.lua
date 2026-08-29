@@ -1,12 +1,7 @@
--- The picker contract: backend resolution, the entry shape both backends render, panel key
--- binding, and the built-in float end to end.
---
--- The bug this suite exists for: chat list entries carried a `display` closure reading the
--- argument — which telescope calls with the picker, not the entry — so rows came up blank, and
--- the spec had no `panel`, so <C-x> fell through to telescope's select_horizontal and crashed.
--- Every entry here goes through the real `ducktape.picker` interface against the built-in
--- backend, which is the only one the bare harness can run; the telescope backend's wrapper is
--- exercised by the parity config, where telescope is actually installed.
+-- The picker contract: backend resolution, entry shape, panel keys, and the built-in float.
+-- Chat-list entries used to carry a `display` closure that telescope called with the picker, not
+-- the entry, blanking rows; specs had no `panel`, so <C-x> fell through to telescope internals
+-- and crashed. Entries here use the real `ducktape.picker` interface on the built-in backend.
 
 local REPORT = "/tmp/picker.out"
 local passed, failed, lines = 0, 0, {}
@@ -32,20 +27,14 @@ end
 local api = vim.api
 local picker = require("ducktape.picker")
 
---=============================================================================
--- Backend resolution
---=============================================================================
-
 do
-	-- Nothing set up yet, so this is the default "auto" route: telescope is not on the bare
-	-- runtimepath, and the built-in float is the fallback.
+	-- "auto" with no telescope on the runtimepath falls back to the built-in float.
 	local name, reason = picker.resolve()
 	ok(name == "default", "bare harness resolves to the built-in float", reason)
 	ok(reason:find("no picker plugin found") ~= nil, "and says telescope is missing", reason)
 end
 
--- The telescope backend may not even load here, so the built-in float is the only one that can
--- be exercised; pin the choice rather than letting "auto" pick it implicitly.
+-- Pin the built-in backend; telescope may not even load in this harness.
 require("ducktape.config").setup({ ui = { picker = "default" } })
 
 do
@@ -69,10 +58,6 @@ do
 	ok((said[1] or ""):find("not available", 1, true) ~= nil, "and says why instead of substituting silently")
 	require("ducktape.config").setup({ ui = { picker = "default" } })
 end
-
---=============================================================================
--- Entry shape: what both backends render, and nothing else
---=============================================================================
 
 -- `display` is the trap that blanked the chat list: it read the argument, and telescope calls
 -- it with the picker. Entries must carry text and highlights; backends own any wrapping.
@@ -99,15 +84,10 @@ for _, scope in ipairs({ "chat", "inline" }) do
 	end
 end
 
---=============================================================================
--- Panel key binding (the <C-x> crash class)
---=============================================================================
-
 do
 	local keys = require("ducktape.keys")
 	local calls = {}
-	-- A spec without a panel must not bind anything: those keys belong to the user's own
-	-- mappings, and a picker stealing them was what let <C-x> die in telescope internals.
+	-- A spec without a panel must not bind panel keys; stealing them let <C-x> crash in telescope.
 	local ok_open, handle = pcall(picker.open, {
 		title = "no panel",
 		entries = function()
@@ -140,10 +120,6 @@ do
 	handle2.close()
 	vim.wait(30)
 end
-
---=============================================================================
--- The built-in float, end to end
---=============================================================================
 
 local entries = {
 	{ value = "alpha", text = "  row alpha", highlights = { { { 2, 7 }, "DucktapeListCurrent" } }, ordinal = "alpha" },
@@ -183,7 +159,7 @@ do
 	end
 	ok(results_win ~= nil, "the results float is up")
 	local content = api.nvim_buf_get_lines(results_buf, 0, -1, false)
-	-- The built-in float draws its border on the window, not in the buffer: one row per entry.
+	-- The built-in float draws its border on the window, not in the buffer.
 	ok(#content == #entries, "one buffer line per entry", #content)
 	for i, entry in ipairs(entries) do
 		ok(content[i] == entry.text, "row " .. i .. " renders the entry text", content[i])
@@ -194,8 +170,6 @@ do
 	ok(#marks > 0, "highlights arrive as extmarks", #marks)
 end
 
--- Only what the spec declares: this one has `delete`, so <C-d> is bound and the rest of the
--- panel's keys are left alone.
 ok(vim.fn.maparg("<C-d>", "i") ~= "", "panel key <C-d> is bound on the prompt")
 for _, lhs in ipairs({ "<C-r>", "<C-x>", "<C-_>" }) do
 	ok(vim.fn.maparg(lhs, "i") == "", "panel key " .. lhs .. " is not bound when undeclared", vim.fn.maparg(lhs, "i"))
@@ -220,8 +194,7 @@ do
 	end
 end
 
--- Headless nvim never leaves normal mode and control keys only reach mappings through
--- Vimscript feedkeys with the typed flag; Lua nvim_feedkeys will not do it.
+-- Headless nvim stays in normal mode; control keys only reach mappings through Vimscript feedkeys.
 vim.cmd("call feedkeys(\"\\<C-d>\", 'xt')")
 vim.wait(50)
 ok(actions_hit ~= nil, "<C-d> fires the panel action", actions_hit and vim.inspect(actions_hit.value))
@@ -249,14 +222,8 @@ handle.close()
 ok(true, "closing twice is harmless")
 vim.wait(30)
 
---=============================================================================
--- The chat list itself, on the built-in backend
---=============================================================================
-
 do
-	-- resumable_sessions() would otherwise spawn a real agent to list sessions; the cache is
-	-- exactly the seam a unit suite must take, and everything downstream is then exercised
-	-- for real.
+	-- Seed the cache so the test does not spawn a real agent; everything downstream is real.
 	require("ducktape.chat_list")._cached_sessions = {
 		{
 			sessionId = "s1",

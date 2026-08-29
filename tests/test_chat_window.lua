@@ -1,13 +1,6 @@
--- ducktape.chat_window: the chat's lifetime as a window.
---
--- The bug this exists for: closing the file the chat was opened next to used to leave a session
--- that was nothing but chat, and toggling that chat away raised `E444: Cannot close last window`
--- from inside codecompanion's `:hide`. The rule is that the chat is a sidecar — it does not outlive
--- the last file, and it does not keep a session alive on its own.
---
--- `verdict()` is asserted rather than the quitting it drives, because a suite that let the rule
--- fire would be quitting the nvim running it. The end-to-end paths (`:q` in a file window, `:q` in
--- the chat) are driven against a real chat by hand; what is mechanised here is the decision.
+-- ducktape.chat_window: the chat is a sidecar that does not outlive the last file window.
+-- Closing that file used to leave a chat-only session, and toggling it away raised E444 from
+-- codecompanion's `:hide`. `verdict()` is asserted instead of letting it quit the test nvim.
 
 local REPORT = "/tmp/chat_window.out"
 local passed, failed, lines = 0, 0, {}
@@ -37,8 +30,7 @@ require("codecompanion").setup({ extensions = { ducktape = { opts = {} } } })
 local window = require("ducktape.chat_window")
 local api = vim.api
 
----A stand-in chat: `is_chat_buf` falls back to the filetype for a buffer codecompanion has not
----registered, which is exactly what this is. Creating a real one would need a live agent.
+---A stand-in chat buffer. `is_chat_buf` falls back to filetype for unregistered buffers.
 ---@return number
 local function chat_buf()
 	local buf = api.nvim_create_buf(false, true)
@@ -46,7 +38,7 @@ local function chat_buf()
 	return buf
 end
 
----Back to one tab holding one ordinary window, whatever the previous case left behind.
+---Reset to one tab with one ordinary window.
 local function reset()
 	vim.cmd("silent! tabonly")
 	vim.cmd("silent! only")
@@ -68,8 +60,7 @@ local cfg = require("ducktape.config").get().chat
 eq("close_with_last_file", cfg.close_with_last_file, true)
 eq("quit_closes_session", cfg.quit_closes_session, true)
 eq("chat_focus key", require("ducktape.keys").lhs("chat_focus"), "<leader>cf")
--- The suite runs under --noplugin, so the plugin script has to be asked for by name, the way
--- test_wiring does.
+-- --noplugin means the plugin script has to be sourced explicitly, as test_wiring does.
 vim.cmd("runtime plugin/ducktape.lua")
 ok(vim.fn.maparg("<Plug>(DucktapeChatFocus)", "n") ~= "", "<Plug>(DucktapeChatFocus) exists")
 ok(vim.fn.maparg("<leader>cf", "n") ~= "", "<leader>cf is bound")
@@ -87,8 +78,7 @@ reset()
 api.nvim_win_set_buf(0, chat_buf())
 eq("chat alone: quit", (window.verdict()), "quit")
 
--- A float is not what a session exists for, so one open over a chat-only layout must not read as
--- a file still being there.
+-- A float over a chat-only layout must not count as a file still being there.
 reset()
 api.nvim_win_set_buf(0, chat_buf())
 local float = api.nvim_open_win(api.nvim_create_buf(false, true), false, {
@@ -101,11 +91,11 @@ local float = api.nvim_open_win(api.nvim_create_buf(false, true), false, {
 eq("a float does not count as a file", (window.verdict()), "quit")
 api.nvim_win_close(float, true)
 
--- Another tab still holds files, so the emptied tab is what goes, not the session.
 reset()
 api.nvim_win_set_buf(0, chat_buf())
 vim.cmd("tabnew")
 vim.bo.filetype = "text"
+-- Another tab holds files, so the emptied tab goes, not the session.
 local verdict, orphans = window.verdict()
 eq("chat alone in its tab, files in another", verdict, "orphaned")
 eq("and one window is named", #orphans, 1)
@@ -119,7 +109,6 @@ vim.cmd("vsplit")
 api.nvim_win_set_buf(0, chat_buf())
 eq("and again with one up", window.report().chats, 1)
 reset()
--- The unsaved list is what explains a `:q` that was refused rather than ignored.
 vim.cmd("enew")
 api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved" })
 ok(#window.report().unsaved > 0, "names buffers that would have nvim refuse the quit")
@@ -127,8 +116,7 @@ vim.bo.modified = false
 reset()
 
 section("QuitPre stands the chat down")
--- `nvim_exec_autocmds` runs the handler without running the `:q` behind it, so the decision can be
--- asserted from inside the session it would otherwise have quit.
+-- `nvim_exec_autocmds` runs the handler without the `:q`, so the decision can be asserted safely.
 local function fire_quitpre()
 	api.nvim_exec_autocmds("QuitPre", { buffer = api.nvim_get_current_buf() })
 end
@@ -142,17 +130,14 @@ api.nvim_set_current_win(file)
 fire_quitpre()
 eq("the last file window: chat is put away", #vim.fn.win_findbuf(cbuf), 0)
 ok(api.nvim_buf_is_valid(cbuf), "and its buffer survives, so VimLeavePre can still save it")
--- It must stay away even though the `:q` behind this never ran, which is the refused-quit case.
--- Restoring it was tried and reverted: reopening a chat focuses it, which left a refused `:q` with
--- the cursor in the chat instead of in the file it was refused over.
+-- It must stay away even when the `:q` is refused; restoring it moved the cursor into the chat.
 vim.wait(100, function()
 	return false
 end)
 eq("and stays away when the quit does not happen", #vim.fn.win_findbuf(cbuf), 0)
 eq("leaving only the file window", #api.nvim_tabpage_list_wins(0), 1)
 
--- The reason this is hidden rather than quit: `:q` over an unsaved file is refused, `:q!` is not,
--- `:wq` writes first. Standing the chat down leaves every one of those to nvim.
+-- Hide rather than quit so `:q`, `:q!`, and `:wq` on unsaved files behave normally.
 reset()
 vim.cmd("vsplit")
 local second = api.nvim_get_current_win()
@@ -178,8 +163,7 @@ local over = api.nvim_open_win(api.nvim_create_buf(false, true), false, {
 	width = 10,
 	height = 3,
 })
--- The predicate behind the toggle guard: `:hide` raises E444 with a float open, because a float
--- cannot be the only window left either.
+-- `:hide` raises E444 with a float open because a float cannot be the only window left either.
 eq("a float does not save it from E444", window.is_last_window(only), true)
 api.nvim_win_close(over, true)
 

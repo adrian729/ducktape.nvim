@@ -1,9 +1,7 @@
--- Chat surface: toggle, new with preset options, close-all, and the prose-float upgrade
--- that opens a chat pre-loaded with the exchange.
+-- Chat surface: toggle, new, close-all, and prose-float open-with-context.
 --
--- Chat connections stay out of the inline pool because a shared connection restoring
--- history would swallow inline updates — the session-loading branch (`_loading_session and
--- _on_session_update`, acp/init.lua:660) outranks `_active_prompt`.
+-- Chat connections stay out of the inline pool: a shared connection restoring history would
+-- swallow inline updates — the session-loading branch outranks `_active_prompt`.
 
 local M = {}
 
@@ -12,7 +10,7 @@ local ui = require("ducktape.ui")
 
 local last_chat_buf = nil
 local spinner_group
-local pending_agents = {} -- bufnr → agent name, applied on first ChatSubmitted
+local pending_agents = {} -- bufnr → agent name, applied once the session exists
 
 -- Chats that were open when nvim last quit and have not been reopened yet. Read from
 -- chat_sessions.json at startup and drained as the user picks them. Nothing here holds an
@@ -20,22 +18,13 @@ local pending_agents = {} -- bufnr → agent name, applied on first ChatSubmitte
 ---@type table[]
 local pending = {}
 
--- Winbar and footer colours come from ducktape.ui, which owns the palette for every ducktape surface.
 local function ensure_winbar_highlights()
 	ui.ensure_highlights()
 end
 
---=============================================================================
--- Chat footer
---=============================================================================
-
--- The chat lives in a half-width vertical split, so the full line does not always fit.
--- Ordered widest-first; the first tier that measures small enough for the window wins.
--- `?` survives into every tier because it opens CodeCompanion's own list of every chat
--- keymap — the footer only has to get you there, not be exhaustive.
----Built per call rather than held as a constant: the two chat entries name ducktape's own keymaps,
----which are configurable, and a footer that keeps naming the defaults after a remap is worse than
----no footer at all. The chat-buffer keys on the left are codecompanion's and are fixed.
+-- Footer tiers, widest-first. `?` survives every tier because it opens CodeCompanion's
+-- own keymap list; the footer only has to get you there.
+---Built per call: configurable ducktape keymaps must not keep naming defaults after a remap.
 ---@return table[]
 local function footer_tiers()
 	local K = require("ducktape.keys").label
@@ -56,10 +45,7 @@ local function footer_tiers()
 end
 
 ---Statusline string for a chat window of the given width.
----
----Each tier is rendered and measured rather than carrying a hand-written minimum width:
----editing a label would otherwise silently invalidate the number next to it, and the line
----would come back clipped mid-word.
+---Tiers are rendered and measured: a hand-written width would silently break when labels change.
 ---@param width number
 ---@return string
 local function footer_text(width)
@@ -82,12 +68,8 @@ local function footer_text(width)
 			return text
 		end
 	end
-	return "" -- narrower than the shortest hint we have; better blank than clipped
+	return "" -- blank beats clipped
 end
-
---=============================================================================
--- Waiting indicator
---=============================================================================
 
 local function ensure_spinner_group()
 	if spinner_group then
@@ -110,7 +92,7 @@ local function ensure_spinner_group()
 
 			local chat = require("codecompanion.interactions.chat").buf_get_chat(bufnr)
 
-			-- Claude agent: must be applied after the session exists (category = nil)
+			-- category=nil options can only be set once the session exists
 			local agent = pending_agents[bufnr]
 			if agent then
 				pending_agents[bufnr] = nil
@@ -120,10 +102,9 @@ local function ensure_spinner_group()
 				end
 			end
 
-			-- An ACP submit that fails before a prompt exists — connection or session setup — still
-			-- fires ChatSubmitted, but RequestFinished only ever comes from the prompt builder, so a
-			-- spinner started here would never be stopped. That failure clears current_request
-			-- synchronously (Chat:done, before the event fires), which is how we recognise it.
+			-- ChatSubmitted fires before a prompt exists on setup failure, but RequestFinished
+			-- only comes from the prompt builder, so a spinner started here would never stop.
+			-- Chat:done clears current_request synchronously before the event, which is the signal.
 			if chat and not chat.current_request then
 				return
 			end
@@ -151,8 +132,7 @@ local function ensure_spinner_group()
 		end,
 	})
 
-	-- A chat buffer that was deleted before its first submit never fires
-	-- ChatSubmitted, so the agent entry would leak forever.
+	-- Deleted before first submit never fires ChatSubmitted; clean up the stale entry.
 	api.nvim_create_autocmd("BufWipeout", {
 		group = spinner_group,
 		callback = function(args)
@@ -161,18 +141,9 @@ local function ensure_spinner_group()
 	})
 end
 
---=============================================================================
--- Adapter resolution
---=============================================================================
-
----Post-resolution tweak: a provider's inline guard environment denies writes, which is right for
----inline and too strict for chat — chat is supposed to be able to change things. It is swapped for
----the chat set rather than dropped: dropping it handed chat silent write access, so edits happened
----with nothing announcing them. opencode's `ask` gets the same confirm-first behaviour claude's
----`default` mode has.
----
----Driven by the provider's `guard.chat_env`, so a provider added through config gets the same
----treatment without an edit here.
+---Swap the provider's inline guard env for its chat guard env.
+---Dropping the env gave chat silent write access; `ask` mirrors claude's `default` confirm-first
+---behaviour. Driven by `guard.chat_env` so config-added providers work without code changes.
 ---@param adapter table
 ---@param provider string
 local function apply_chat_permissions(adapter, provider)
@@ -188,11 +159,8 @@ local function apply_chat_permissions(adapter, provider)
 end
 
 ---Re-point an HTTP adapter's schema defaults at the chat scope.
----
----The generated adapters read the inline selection, because that is the scope they are claimed for
----by default. A chat on the same provider has its own model and options, so the schema has to be
----told which scope it is serving. Every option the provider offers for chat is redirected, using
----the option's own `to_schema` where the stored value and the schema field disagree in type.
+---Generated adapters default to inline; redirect every chat option, applying `to_schema` when the
+---stored value and schema field differ in type.
 ---@param adapter table
 ---@param provider string
 local function redirect_schema_to_chat(adapter, provider)
@@ -262,8 +230,7 @@ local function resolve_chat_adapter()
 	return adapter
 end
 
----Like resolve_chat_adapter but for a specific provider, model, and saved opts,
----used during restore when the global selection may not match the saved chat.
+---Resolve a chat adapter for a saved chat, where the current selection may not match.
 ---@param provider string
 ---@param model string|nil
 ---@param saved_opts table
@@ -273,7 +240,7 @@ local function resolve_chat_adapter_for(provider, model, saved_opts)
 	local adapters = require("codecompanion.adapters")
 
 	if not providers.resumable(provider) then
-		return nil -- no agent session to reopen, so nothing to persist against
+		return nil -- nothing to persist against
 	end
 
 	local session_opts = {}
@@ -281,18 +248,14 @@ local function resolve_chat_adapter_for(provider, model, saved_opts)
 	if not spec then
 		return nil
 	end
-	-- Merge saved opts over provider defaults so effort/fast from the original chat are
-	-- preserved ("keep" means the saved value wins)
+	-- `keep` lets saved effort/fast override defaults.
 	local opts = vim.tbl_extend("keep", saved_opts, (providers.defaults.chat.opts or {})[provider] or {})
 	if model then
 		opts.model = model
 	end
 
-	-- `mode` is the exception, and deliberately not inherited: it decides whether the agent
-	-- may write without asking, which is a standing decision about this machine rather than
-	-- a property of one old conversation. Inheriting it meant chats created while the
-	-- default was `acceptEdits` kept silent write access for good, so tightening the default
-	-- appeared to do nothing — every existing chat reopened under the old, laxer setting.
+	-- `mode` is not inherited: it controls write permission, a machine-level choice, not a
+	-- property of one conversation. Inheriting it once kept old chats on `acceptEdits` forever.
 	opts.mode = (providers.opts_for("chat", provider) or {}).mode
 
 	for _, key in ipairs(spec.chat_options or {}) do
@@ -312,10 +275,6 @@ local function resolve_chat_adapter_for(provider, model, saved_opts)
 	apply_chat_permissions(adapter, provider)
 	return adapter
 end
-
---=============================================================================
--- On-disk state
---=============================================================================
 
 ---@param path string
 ---@return table
@@ -344,11 +303,8 @@ local function write_json(path, data)
 	end
 end
 
--- Titles the user chose, keyed by ACP session ID. Kept apart from chat_sessions.json
--- because they outlive the chats that carried them: a renamed session still shows under
--- that name when it turns up in the chat list as resumable, long after its buffer is
--- gone. They also have to be distinguishable from titles the *agent* generated, which
--- arrive at every turn end and are free to change — a user's name is not.
+-- User-chosen titles keyed by ACP session ID. Kept apart from chat_sessions.json because they
+-- outlive the buffer and must survive the agent's own auto-generated titles.
 local titles_file = vim.fn.stdpath("state") .. "/ducktape/chat_titles.json"
 
 ---@return table<string, string> session ID → user-chosen title
@@ -356,9 +312,8 @@ function M.saved_titles()
 	return read_json(titles_file)
 end
 
----Record a user-chosen title for a session, or forget it when title is nil.
----@param sid string|nil No-op without one — a chat with no exchange yet has no session
----to key the title to, and save_open_chats backfills it once there is.
+---Record or forget a user-chosen title for a session.
+---@param sid string|nil No-op without a session ID; save_open_chats backfills it later.
 ---@param title string|nil
 function M.set_saved_title(sid, title)
 	if not sid then
@@ -369,24 +324,15 @@ function M.set_saved_title(sid, title)
 	write_json(titles_file, titles)
 end
 
---=============================================================================
--- Public API
---=============================================================================
-
----A minimal buffer context carrying only the fields Chat.new accesses directly
----(bufnr). The full editor context (n module) is assembled by the plugin itself
----from args.context if the caller provides one.
+---A minimal buffer context: Chat.new only needs `bufnr`.
 ---@return table
 local function current_buffer_context()
 	return { bufnr = api.nvim_get_current_buf() }
 end
 
----Stash any option that can only be applied once the session exists, for the first ChatSubmitted.
----
----Such an option has category = nil in the agent's own schema and can only reach the session via
----conn:set_config_option, which needs the live session that does not exist at Chat.new time. Which
----options those are comes from the provider spec's `after_session` flag rather than from the
----provider's name, so a provider with one of its own is carried too.
+---Stash options that can only be set once the session exists.
+---These have category=nil in the agent schema and need `conn:set_config_option`. The provider
+---spec's `after_session` flag decides which, so config-added providers are carried too.
 ---@param bufnr number
 ---@param provider string
 ---@param opts table
@@ -402,12 +348,9 @@ local function stash_agent(bufnr, provider, opts)
 	end
 end
 
----Post-creation guard: track the buffer, set an informative title, stash the agent, and
----record provider/model so the chat list can surface them without guessing from the adapter.
+---Track the new chat, set its title, stash after-session options, and record provider/model.
 ---@param chat table|nil
----@param override? { provider: string, model?: string, opts?: table } A restored chat
----carries the provider/model/opts it was originally created with, which need not
----match the current selection.
+---@param override? { provider: string, model?: string, opts?: table } Restored chats carry their original values.
 local function post_create(chat, override)
 	if not chat then
 		return
@@ -428,16 +371,14 @@ local function post_create(chat, override)
 	chat._ducktape_model = model
 	chat._ducktape_opts = vim.deepcopy(opts) -- capture effort, mode, fast, etc.
 
-	-- The end of a turn is when the transcript in the buffer becomes the record again, so it is
-	-- also when ducktape.chat_edit stops treating anything above the prompt as an edit. on_ready covers
-	-- the end of a restore too — acp/render.lua's restore_session finishes by calling it.
+	-- End of turn means the buffer is the record again; tell chat_edit to rebase there.
+	-- on_ready also fires at the end of restore_session.
 	chat:add_callback("on_ready", function(c)
 		require("ducktape.chat_edit").rebase(c)
 	end)
 
-	-- Winbar header — stays pinned at the top of every window showing this chat.
-	-- BufFilePost fires when CodeCompanion auto-titles the chat (set_title → nvim_buf_set_name),
-	-- so the title field updates within a second of the first response landing.
+	-- Winbar header pinned to every window showing this chat. BufFilePost fires on auto-title
+	-- (set_title → nvim_buf_set_name), so the title updates soon after the first response.
 	ensure_winbar_highlights()
 
 	local function winbar_text(bufnr)
@@ -456,8 +397,7 @@ local function post_create(chat, override)
 		}
 	end
 
-	---Winbar and footer for every window showing this chat. The footer tier depends on the
-	---window's width, so this has to run per window rather than once per buffer.
+	---Winbar and footer per window: footer tier depends on window width.
 	local function update_chrome(bufnr)
 		if not api.nvim_buf_is_valid(bufnr) then
 			return
@@ -481,7 +421,7 @@ local function post_create(chat, override)
 	local augroup = api.nvim_create_augroup("DucktapeChatWinbar" .. chat.bufnr, { clear = true })
 	vim.defer_fn(function()
 		update_chrome(chat.bufnr)
-	end, 10) -- wait for the window to materialise
+	end, 10) -- let the window materialise
 
 	api.nvim_create_autocmd("BufWinEnter", {
 		group = augroup,
@@ -490,18 +430,15 @@ local function post_create(chat, override)
 			update_chrome(chat.bufnr)
 		end,
 	})
-	-- Re-tier the footer when the window changes width: a narrowed window would otherwise
-	-- keep the wider line it was given, clipped mid-word.
+	-- Re-tier on resize so a narrowed window does not keep a clipped wider line.
 	api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
 		group = augroup,
 		callback = function()
 			update_chrome(chat.bufnr)
 		end,
 	})
-	-- Winbar and statusline are window options, so they outlive the buffer that asked for
-	-- them: opening a file in the chat's window would otherwise leave that file wearing the
-	-- chat's header and key line. Only the window the buffer is leaving is cleared — another
-	-- split showing the same chat keeps its own.
+	-- Window options outlive the buffer; clear them when the chat leaves a window so a
+	-- replacement file does not wear the chat chrome.
 	api.nvim_create_autocmd("BufWinLeave", {
 		group = augroup,
 		buffer = chat.bufnr,
@@ -515,12 +452,9 @@ local function post_create(chat, override)
 			end
 		end,
 	})
-	-- Also where a user-chosen title is defended. The agent pushes its own
-	-- auto-generated title at the end of every turn (session_info_update →
-	-- Chat:set_title, acp/init.lua:653) and nothing there asks whether the name was
-	-- the user's, so a rename would otherwise survive only until the next message.
-	-- set_title renames the buffer, so this fires for the agent's write as much as
-	-- for our own — hence the re-entrancy guard on the correction.
+	-- Defend user-chosen titles: the agent pushes an auto-title every turn and does not ask
+	-- whether the name was the user's. set_title renames the buffer, so this fires for our
+	-- writes too — hence the re-entrancy guard.
 	local reasserting = false
 	api.nvim_create_autocmd("BufFilePost", {
 		group = augroup,
@@ -551,10 +485,9 @@ local function post_create(chat, override)
 	})
 end
 
----The most recently created live chat. Falls back to walking codecompanion_buffers
----(append-ordered, so the tail is newest) because the plugin only records `last_chat`
----for chats it opened a window for, plus on BufEnter — and a restored chat is created
----hidden and never entered, so it is invisible to that bookkeeping until first opened.
+---The most recently created live chat.
+---Falls back to walking codecompanion_buffers (tail is newest) because restored chats are created
+---hidden and never entered, so the plugin's `last_chat` bookkeeping misses them.
 ---@return table|nil
 local function newest_chat()
 	local Chat = require("codecompanion.interactions.chat")
@@ -573,9 +506,8 @@ local function newest_chat()
 	end
 end
 
----The chat `M.toggle` would reach — i.e. the one the user thinks of as current. Exposed
----for the chat list, which marks it. Callers must read this *before* opening a picker:
----last_chat follows BufEnter, so once a Telescope prompt has focus the answer can change.
+---The chat `M.toggle` would reach. Exposed for the chat list; read before opening a picker,
+---since last_chat follows BufEnter and a Telescope prompt changes the answer.
 ---@return table|nil
 function M.current_chat()
 	return newest_chat()
@@ -587,10 +519,8 @@ function M.pending_chats()
 	return pending
 end
 
----Take an entry out of the pending set, because it is about to become a live chat and the
----live-chat scan governs it from then on. Without this a reopened chat would be counted
----twice on quit, and — worse — a chat reopened and then deliberately closed would be
----carried forward and come back anyway.
+---Remove an entry from the pending set before it becomes live.
+---Without this, reopened chats are counted twice on quit and deliberately closed chats come back.
 ---@param entry table
 local function consume_pending(entry)
 	for i, p in ipairs(pending) do
@@ -603,17 +533,13 @@ local function consume_pending(entry)
 	end
 end
 
----Toggle the last chat buffer. Delegates to the plugin's own toggle, which
----tracks last_chat internally and is the authority on show/hide state — but
----only once a real chat exists. Without this guard, the plugin's own toggle
----creates a brand-new chat with adapter = nil when there is none, bypassing
----all of this repo's provider/model/effort/mode setup.
+---Toggle the last chat buffer.
+---Delegates to the plugin's toggle only once a real chat exists; otherwise it would create a new
+---chat with adapter=nil, bypassing ducktape's provider/model setup.
 function M.toggle()
 	local chat = newest_chat()
 	if not chat then
-		-- Nothing live, but something may be waiting to be reopened. Reviving beats
-		-- creating a blank chat here: the whole promise of persistence is that this keymap
-		-- reaches the work you left, and `<leader>cn` is what asks for a fresh one.
+		-- Nothing live: revive a pending chat before creating a blank one.
 		local entry = pending[#pending]
 		if entry then
 			ui.say(("[ducktape] reopening %s…"):format(entry.title or "your last chat"), vim.log.levels.INFO)
@@ -624,9 +550,8 @@ function M.toggle()
 		end
 		return M.new()
 	end
-	-- Toggling off is `:hide`, and `:hide` on the last window is E444 rather than a no-op. Reached
-	-- when the chat has been left alone deliberately (`:only`, or `chat.close_with_last_file` set
-	-- to false), since a file window closing otherwise takes the chat with it.
+	-- `:hide` on the last window raises E444. This branch is reached when the chat was left
+	-- deliberately (`:only` or `close_with_last_file=false`).
 	if
 		chat.ui
 		and chat.ui:is_visible()
@@ -638,10 +563,8 @@ function M.toggle()
 			vim.log.levels.WARN
 		)
 	end
-	-- The plugin's toggle acts on its own last_chat, which is nil for a restored
-	-- chat — it would create a brand-new chat and shadow the restored one. Open the
-	-- chat we found directly; entering the buffer sets last_chat, so subsequent
-	-- toggles can go through the plugin as usual.
+	-- The plugin's toggle uses its own last_chat, nil for restored chats, so it would shadow
+	-- them with a new chat. Open the found chat directly; entering sets last_chat for next time.
 	if not require("codecompanion.interactions.chat").last_chat() then
 		chat.ui:open()
 		if chat.ui.winnr and api.nvim_win_is_valid(chat.ui.winnr) then
@@ -652,9 +575,7 @@ function M.toggle()
 	vim.cmd("CodeCompanionChat Toggle")
 end
 
----Put the cursor in the chat, opening it first if it was hidden. Never hides — that is what
----`M.toggle` is for, and a key that means "take me there" must not mean "put it away" depending on
----which window happened to be focused.
+---Focus the chat, opening it if hidden. Never hides: that is `M.toggle`'s job.
 function M.focus()
 	local chat = newest_chat()
 	if not chat then
@@ -673,8 +594,8 @@ function M.focus()
 	end
 end
 
----Start a new chat with the current provider and its preset options.
----Extra keys (messages, auto_submit, etc.) are passed through to Chat.new.
+---Start a new chat with the current provider and preset options.
+---Extra keys pass through to Chat.new.
 ---@param opts? table
 function M.new(opts)
 	opts = opts or {}
@@ -691,19 +612,15 @@ function M.new(opts)
 	post_create(chat)
 end
 
----Close every chat buffer the plugin knows about.
+---Close every chat buffer.
 function M.close_all()
 	local closed = 0
-	-- Snapshot before iterating: Chat:close() mutates codecompanion_buffers
-	-- via table.remove, and ipairs over the live table would skip elements
-	-- as later entries shift down into already-visited slots.
+	-- Snapshot first: Chat:close() mutates codecompanion_buffers during iteration.
 	local bufs = vim.list_extend({}, _G.codecompanion_buffers or {})
 	for _, buf in ipairs(bufs) do
 		if api.nvim_buf_is_valid(buf) then
-			-- Route through Chat:close() so the acp_connection gets
-			-- disconnected and codecompanion_buffers/chats bookkeeping stays
-			-- in sync; a raw buf_delete would leak the subprocess and leave
-			-- the stale bufnr behind.
+			-- Route through Chat:close() so the ACP connection disconnects and bookkeeping stays
+			-- in sync; a raw buf_delete would leak the subprocess.
 			local chat = require("codecompanion.interactions.chat").buf_get_chat(buf)
 			if chat then
 				chat:close()
@@ -720,17 +637,14 @@ function M.close_all()
 	end
 end
 
----Stop the running request in the last active chat. Works from anywhere —
----the chat buffer doesn't need to be focused.
+---Stop the running request in the last active chat.
 function M.stop()
 	local chat = require("codecompanion.interactions.chat").last_chat()
 	if not chat or not api.nvim_buf_is_valid(chat.bufnr) then
 		return ui.say("[ducktape] no chat to stop", vim.log.levels.INFO)
 	end
 	if chat.current_request or chat.tool_orchestrator then
-		-- CodeCompanion's stop does not reliably fire RequestFinished, which is what
-		-- clears our thinking spinner. Clear it here so the virtual text doesn't stay
-		-- frozen on screen.
+		-- CodeCompanion's stop does not reliably fire RequestFinished, so clear our spinner here.
 		local ok, spinner = pcall(api.nvim_buf_get_var, chat.bufnr, "ducktape_chat_spinner")
 		if ok and spinner then
 			spinner.stop()
@@ -743,10 +657,7 @@ function M.stop()
 	end
 end
 
----Give a chat a title of the user's choosing and make it stick. Three places have to
----agree for that: the chat itself (set_title, which also renames the buffer and so drags
----the winbar along), `_ducktape_user_title` so the agent's own auto-title is corrected rather
----than accepted, and the titles store so the name survives the buffer and the restart.
+---Apply a user-chosen title and make it stick in chat, `_ducktape_user_title`, and the store.
 ---@param chat table
 ---@param title string
 function M.apply_title(chat, title)
@@ -756,8 +667,7 @@ function M.apply_title(chat, title)
 	M.set_saved_title(conn and conn.session_id, title)
 end
 
----Rename the current chat.
----@param chat? table Passed by the chat list to rename a specific entry.
+---Rename the current chat, or the chat passed by the chat list.
 function M.rename(chat)
 	chat = chat or require("codecompanion.interactions.chat").buf_get_chat(api.nvim_get_current_buf())
 	if not chat then
@@ -776,9 +686,7 @@ function M.rename(chat)
 	end)
 end
 
----Open a chat pre-loaded with messages — the prose-float upgrade. The caller
----passes `messages` and any other Chat.new argument, and the adapter is resolved
----from the current chat provider selection.
+---Open a chat pre-loaded with messages (prose-float). Adapter resolved from current selection.
 ---@param opts? table
 function M.open_with_context(opts)
 	opts = opts or {}
@@ -800,16 +708,8 @@ function M.pick()
 	require("ducktape.pick").open("chat")
 end
 
---=============================================================================
--- Chat persistence — ACP session IDs saved per cwd, resumed via session/load
---=============================================================================
--- What persists is the agent's *own* session, not a private copy of the transcript.
--- Replaying saved `chat.messages` into a fresh session restores the buffer text but
--- leaves the agent with no memory of the conversation: the ACP adapter's
--- form_messages (adapters/acp/helpers.lua) forwards only user messages not yet
--- marked sent, and the agent holds its history server-side. claude-agent-acp
--- advertises loadSession, so the durable record is the session ID — persist that and
--- let session/load replay the transcript back to us.
+-- Persist the agent's own session ID, not a private transcript copy. Replaying saved messages
+-- into a fresh session leaves the agent with no memory; the durable record is the session ID.
 
 local state_file = vim.fn.stdpath("state") .. "/ducktape/chat_sessions.json"
 
@@ -823,31 +723,17 @@ local function write_state(data)
 	write_json(state_file, data)
 end
 
----The key this project's saved chats are filed under.
----
----`opts.session.chats`, which is the working directory by default — what this has always used. Two
----subdirectories of one repository therefore keep their own sets of chats, which is the behaviour
----anyone with saved chats already has.
----
----It is deliberately a separate setting from `session.scope`, which decides which resumable *agent
----sessions* the chat list offers. Those two genuinely want different answers: sessions are filtered
----by repository root so they do not vanish when nvim is opened in a subdirectory, while chats have
----always been per directory. Collapsing them onto one setting would move somebody's saved chats
----without being asked to.
+---Key for this project's saved chats.
+---Defaults to cwd; subdirectories keep their own sets. Separate from `session.scope` because
+---resumable sessions and saved chats want different granularity.
 ---@return string
 local function state_key()
 	return require("ducktape.scope").key(require("ducktape.config").get().session.chats)
 end
 
----This project's saved entries, and the key they should be written back under.
----
----When `session.chats` is the working directory — the default — this is a plain lookup and there is
----nothing to migrate.
----
----When it is anything coarser, every existing key at or under the new one is *merged* rather than
----the first match winning. First-wins loses chats: with `/repo/frontend` and `/repo/backend` each
----holding their own set, opening one of them would claim the `/repo` key and leave the other's
----entries in the file with nothing that ever looks them up again.
+---Read this project's saved entries and the key they should be written back under.
+---When `session.chats` is coarser than cwd, merge every key at or under it. First-wins would lose
+---chats from sibling subdirectories.
 ---@param data table<string, table[]>
 ---@param override_key? string The key to read for, instead of the configured one. Tests only.
 ---@return table[]|nil entries, string key
@@ -855,14 +741,13 @@ local function read_entries(data, override_key)
 	local key = override_key or state_key()
 	local cwd = vim.fn.getcwd()
 
-	-- The common case, and the default: the key is the directory, so there is only ever one bucket.
+	-- Default: key is the directory, so there is only one bucket.
 	if key == cwd then
 		local entries = data[key]
 		return type(entries) == "table" and entries or nil, key
 	end
 
-	-- A coarser key. Gather its own bucket plus every directory-scoped one beneath it, in a stable
-	-- order so a merge is reproducible.
+	-- Coarser key: gather its own bucket plus every directory-scoped one beneath it.
 	local sources = {}
 	for stored in pairs(data) do
 		if stored == key or vim.startswith(stored, key .. "/") then
@@ -874,8 +759,7 @@ local function read_entries(data, override_key)
 	local merged, seen = {}, {}
 	for _, stored in ipairs(sources) do
 		for _, entry in ipairs(data[stored] or {}) do
-			-- Deduplicated by session ID: the same chat can legitimately appear under two keys once
-			-- a repository has been opened from two of its subdirectories.
+			-- Deduplicate by session ID; the same chat can appear under two subdirectory keys.
 			local id = entry.session_id
 			if id == nil or not seen[id] then
 				seen[id or entry] = true
@@ -887,11 +771,9 @@ local function read_entries(data, override_key)
 	return #merged > 0 and merged or nil, key
 end
 
----Has this chat completed at least one exchange? Only then has the agent committed
----the session to its own store, so only then is its session ID worth saving — an
----unused chat's ID resolves to "Resource not found" on the next start, which
----CodeCompanion reports as an error notification. Presence of an LLM reply is the
----provider-agnostic proxy for "the agent saved it".
+---Has the chat completed at least one exchange?
+---The agent only commits the session after an LLM reply; saving an unused ID raises "Resource not
+---found" on restore. LLM presence is the provider-agnostic proxy.
 ---@param chat table
 ---@return boolean
 local function has_exchange(chat)
@@ -904,13 +786,9 @@ local function has_exchange(chat)
 	return false
 end
 
----Record every live ACP chat under the current cwd, replacing whatever was stored
----for it before. A chat the user closed is simply absent from the new list, which
----is what stops it coming back on the next start.
----
----Every chat is remembered; only its `session_id` is conditional. A chat with no
----exchange behind it is stored without one and comes back as an empty chat — there
----is no history to lose, so it reopens rather than disappearing.
+---Record every live ACP chat under the current cwd, replacing what was stored before.
+---Closed chats are absent and do not come back. Empty chats are stored without a session_id and
+---reopen empty.
 local function save_open_chats()
 	local entries = {}
 	for _, bufnr in ipairs(_G.codecompanion_buffers or {}) do
@@ -918,35 +796,27 @@ local function save_open_chats()
 			local chat = require("codecompanion.interactions.chat").buf_get_chat(bufnr)
 			local is_acp = chat and chat.adapter and chat.adapter.type == "acp"
 			if is_acp and chat._ducktape_provider then
-				-- Read the session ID off the live connection rather than a value cached at
-				-- creation time: Chat.new establishes the connection on a scheduled tick, so
-				-- anything captured synchronously after it returns is still nil.
-				-- `_ducktape_resumable` covers the restored-chat case: replaying a transcript goes
-				-- through add_buf_message, which writes the buffer without repopulating
-				-- chat.messages (and restore_session clears it first), so a chat resumed and
-				-- not yet written to looks empty to has_exchange. Its session is known-good
-				-- by definition — it was just loaded from the agent's own store.
+				-- Read the session ID from the live connection; Chat.new establishes it on a
+				-- scheduled tick, so synchronous capture after it returns is nil. `_ducktape_resumable`
+				-- covers restored chats, whose transcript is replayed into the buffer without
+				-- repopulating chat.messages, so has_exchange would see them as empty.
 				local conn = chat.acp_connection
 				local resumable = conn and conn.session_id and (chat._ducktape_resumable or has_exchange(chat))
 
-				-- The auto-title only lands after the first response; before that the title
-				-- is the `provider · model` placeholder set at creation. Saving that would
-				-- pin the placeholder forever, so leave it out and let the restore fall
-				-- back to whatever the agent reports.
+				-- The auto-title only lands after the first response; before that the title is the
+				-- `provider · model` placeholder. Saving it would pin the placeholder forever.
 				local title = chat.title
 				if title == ("%s · %s"):format(tostring(chat._ducktape_provider), tostring(chat._ducktape_model)) then
 					title = nil
 				end
 
-				-- Backfill: a chat renamed before its first exchange had no session ID to
-				-- key the name to, so M.apply_title could only record it on the chat.
+				-- Backfill: a chat renamed before its first exchange had no session ID to key to.
 				if chat._ducktape_user_title and conn and conn.session_id then
 					M.set_saved_title(conn.session_id, chat._ducktape_user_title)
 				end
 
-				-- `mode` is left out on the way to disk too, so the file stops carrying a
-				-- permission setting at all. Copied rather than edited in place: `_ducktape_opts`
-				-- is live state the winbar and status panel read.
+				-- `mode` is left out so the file carries no permission setting. Copy rather than
+				-- edit in place because `_ducktape_opts` is live state the UI reads.
 				local opts = vim.deepcopy(chat._ducktape_opts or {})
 				opts.mode = nil
 
@@ -961,11 +831,9 @@ local function save_open_chats()
 		end
 	end
 
-	-- Carry forward everything still pending. Since nothing is restored at startup, the
-	-- live scan above sees only what the user actually opened, and writing that alone would
-	-- quietly forget every chat they left untouched. Entries are dropped from `pending` the
-	-- moment they are reopened or deleted, so this cannot resurrect a chat that was
-	-- reopened and then closed on purpose, and cannot duplicate one that is now live.
+	-- Carry forward pending entries so untouched chats are not forgotten. Entries leave
+	-- `pending` when reopened or deleted, so this cannot resurrect a closed chat or duplicate a
+	-- live one.
 	local live_sessions = {}
 	for _, e in ipairs(entries) do
 		if e.session_id then
@@ -981,9 +849,7 @@ local function save_open_chats()
 	local data = read_state()
 	local key = state_key()
 	data[key] = #entries > 0 and entries or nil
-	-- With a coarser `session.chats`, drop every directory-scoped bucket the read merged from, so the
-	-- two forms do not both accumulate. Only the ones beneath this key: another repository's entries
-	-- are none of our business.
+	-- Drop directory-scoped buckets merged from so the two forms do not accumulate.
 	for stored in pairs(data) do
 		if stored ~= key and vim.startswith(stored, key .. "/") then
 			data[stored] = nil
@@ -992,18 +858,11 @@ local function save_open_chats()
 	write_state(data)
 end
 
---=============================================================================
--- Removing chats and the sessions behind them
---=============================================================================
-
----Drop every local trace of a session: its saved entry for this cwd, and any name the
----user gave it. Only correct once the agent has actually deleted it — forgetting a
----session the agent still holds just means it reappears in the chat list, sourced from
----session/list, under its agent-generated title.
+---Drop every local trace of a session once the agent has deleted it.
+---Forgetting before deletion lets it reappear in the chat list from session/list.
 ---@param sid string
 local function forget_session(sid)
-	-- Pending first: it is written back over the state file on quit, so pruning only the
-	-- file would see the deleted session reappear at the next start.
+	-- Pending first: it is written back on quit, so pruning only the file would resurrect it.
 	for i = #pending, 1, -1 do
 		if pending[i].session_id == sid then
 			table.remove(pending, i)
@@ -1025,16 +884,13 @@ local function forget_session(sid)
 	M.set_saved_title(sid, nil)
 end
 
----Stop offering a pending chat without deleting anything. Its session, if it has one,
----stays in the agent's store and so stays resumable from the chat list — this only says
----"do not reopen this one for me". Defined here rather than beside the other pending
----helpers because it needs the state file, which is set up in this half of the module.
+---Stop offering a pending chat without deleting its session.
+---The session stays resumable from the chat list; this just says "do not reopen this one for me".
 ---@param entry table
 function M.forget_pending(entry)
 	consume_pending(entry)
 
-	-- Written through now rather than left to the quit-time save, so the decision survives
-	-- a crash and matches what the user just watched happen.
+	-- Write now so the decision survives a crash and matches what the user just saw.
 	local data = read_state()
 	local saved, key = read_entries(data)
 	if saved and entry.session_id ~= nil then
@@ -1049,11 +905,9 @@ function M.forget_pending(entry)
 	end
 end
 
----Whether the agent behind a connection advertises session/delete. Read straight off
----the initialize response the connection cached, because CodeCompanion wraps `list` and
----`load` in can_* helpers but not `delete` — and asking for an unadvertised method earns
----a JSON-RPC method-not-found, which its own notify handler turns into a red box on
----screen (acp/init.lua:596).
+---Whether the agent advertises session/delete.
+---Read from the cached initialize response: CodeCompanion wraps list/load but not delete, and
+---calling an unadvertised method raises a JSON-RPC error the notify handler renders on screen.
 ---@param conn table|nil
 ---@return boolean
 local function can_delete_sessions(conn)
@@ -1068,8 +922,7 @@ end
 ---@return boolean
 local function session_is_listed(conn, sid)
 	if not (conn.can_list_sessions and conn:can_list_sessions()) then
-		-- No way to check, so take the agent at its word. Claiming a delete that did not
-		-- happen is the worse of the two mistakes.
+		-- Cannot verify; claiming a delete that did not happen is the worse mistake.
 		return true
 	end
 	for _, s in ipairs(conn:session_list({ max_sessions = 500 }) or {}) do
@@ -1080,9 +933,8 @@ local function session_is_listed(conn, sid)
 	return false
 end
 
----Delete a session from the agent's own store, then forget it here. Any ready connection
----to the right agent will do: the agent deletes by ID, not by whatever session the
----connection itself is holding.
+---Delete a session from the agent's own store, then forget it here.
+---Any ready connection to the right agent works: deletion is by ID, not by the connection's session.
 ---@param sid string
 ---@param conn table A ready ACP connection to the agent that owns the session
 ---@return boolean deleted
@@ -1092,16 +944,12 @@ function M.delete_session(sid, conn)
 		return false
 	end
 
-	-- The agent answers with an empty object; send_rpc_request maps both a JSON-RPC error
-	-- and a timeout to nil, so a nil answer is not by itself a surviving session.
+	-- send_rpc_request maps JSON-RPC errors and timeouts to nil, so nil is not proof of survival.
 	local answered = conn:send_rpc_request("session/delete", { sessionId = sid }) ~= nil
 
-	-- Verify instead of trusting the answer, because neither answer means what it looks
-	-- like. A refusal is what a session the agent never stored gets — a chat closed before
-	-- its first exchange — and there is nothing to delete in that case anyway. An
-	-- acknowledgement is not proof either: the agent unlinks the transcript, but anything
-	-- still holding that session writes it straight back, and the RPC reports success
-	-- regardless (measured — hence the connection rules on connection_for_cleanup).
+	-- Verify: a refusal means the session was never stored (nothing to delete); an ack is not
+	-- proof because anything still holding the session writes it back. Measured — hence the
+	-- connection rules in connection_for_cleanup.
 	if session_is_listed(conn, sid) then
 		ui.say(
 			answered
@@ -1118,8 +966,8 @@ function M.delete_session(sid, conn)
 	return true
 end
 
----Whether the agent is still working on this chat's turn. `_active_prompt` is the ACP
----side of it: chat.current_request only covers the HTTP adapters.
+---Whether the agent is still working on this chat's turn.
+---`chat.current_request` only covers HTTP adapters; ACP uses `_active_prompt`.
 ---@param chat table
 ---@return boolean
 local function in_flight(chat)
@@ -1127,11 +975,9 @@ local function in_flight(chat)
 	return chat.current_request ~= nil or (conn ~= nil and conn._active_prompt ~= nil)
 end
 
----A ready connection able to delete `sid`, which means any connection except one holding
----it. Deleting a session over the connection that owns it does not stick: the agent
----unlinks the transcript, the live session writes it straight back, and the RPC reports
----success either way — measured, twice. Another live chat's connection will do; spawning
----one costs a subprocess and a handshake, which is why it is the fallback.
+---Find a ready connection that does not hold `sid`.
+---Deleting over the owning connection does not stick: the live session writes the transcript back.
+---Prefer another live chat's connection; spawn only as a fallback.
 ---@param provider string
 ---@param sid string
 ---@return table|nil conn, boolean spawned Caller disconnects it when spawned
@@ -1156,9 +1002,7 @@ local function connection_for_cleanup(provider, sid)
 	return nil, false
 end
 
----Remove a chat for good: the buffer closes and the agent's stored copy of the
----conversation is deleted, so it does not come back as a resumable session. Irreversible
----— the agent unlinks the transcript — hence the confirmation.
+---Delete a chat and its stored session. Irreversible, so confirm first.
 ---@param chat? table Defaults to the chat in the current buffer, else the newest one
 function M.delete(chat)
 	chat = chat or require("codecompanion.interactions.chat").buf_get_chat(api.nvim_get_current_buf()) or newest_chat()
@@ -1170,11 +1014,9 @@ function M.delete(chat)
 	local provider = chat._ducktape_provider
 	local conn = chat.acp_connection
 	local sid = conn and conn.session_id
-	-- A session ID alone does not mean there is anything to lose: session/new happens at
-	-- creation, while the agent writes the transcript only once there has been an
-	-- exchange. Same test save_open_chats uses to decide whether an ID is worth keeping.
-	-- It informs the wording only — the deletion below still runs on the strength of the
-	-- session ID, since this test reads as false mid-answer, when there *is* a file.
+	-- A session ID alone does not mean there is a transcript to lose; the agent writes it only
+	-- after an exchange. Same test save_open_chats uses. This only informs wording; deletion still
+	-- runs on the session ID (the test is false mid-answer, when there *is* a file to lose).
 	local stored = sid ~= nil and (chat._ducktape_resumable or has_exchange(chat))
 	local question = stored and ("Delete %s and its saved transcript? This cannot be undone."):format(title)
 		or ("Close %s? It has no saved transcript."):format(title)
@@ -1182,8 +1024,7 @@ function M.delete(chat)
 		return
 	end
 
-	-- End the turn before pulling the session out from under it, so the agent is not
-	-- mid-write when its process goes away.
+	-- End the turn before closing so the agent is not mid-write.
 	if sid and in_flight(chat) then
 		pcall(chat.stop, chat)
 		vim.wait(2000, function()
@@ -1191,8 +1032,7 @@ function M.delete(chat)
 		end, 50)
 	end
 
-	-- Closing disconnects the chat's ACP connection, which is what releases the session:
-	-- the deletion below has to happen after that, and over a different connection.
+	-- Closing releases the session; deletion must happen afterward over a different connection.
 	chat:close()
 	require("ducktape.chat_list").clear_cache()
 
@@ -1200,8 +1040,7 @@ function M.delete(chat)
 		return ui.say(("[ducktape] closed %s"):format(title), vim.log.levels.INFO)
 	end
 
-	-- The agent flushes the transcript as its process winds down, so let the close land
-	-- before asking for the file to go.
+	-- Let the close land before deleting, so the agent finishes flushing the transcript.
 	vim.wait(600)
 
 	local cleanup_conn, spawned = connection_for_cleanup(provider, sid)
@@ -1220,20 +1059,18 @@ function M.delete(chat)
 	if deleted then
 		ui.say(("[ducktape] deleted %s"):format(title), vim.log.levels.INFO)
 	else
-		-- The chat is gone but the agent still holds the session, so it will show up
-		-- under <leader>cl as resumable. Say so rather than implying a clean delete.
+		-- The chat is gone but the agent still holds the session; it will show up as resumable.
 		ui.say(("[ducktape] closed %s, but the agent kept its session"):format(title), vim.log.levels.WARN)
 	end
 end
 
----Poll until the chat's own ACP connection has finished its handshake. Chat.new
----kicks it off via vim.schedule and the initialize/authenticate round trip takes a
----second or more, so there is nothing usable when Chat.new returns.
+---Poll until the chat's ACP connection finishes its handshake.
+---Chat.new schedules setup, so nothing is usable synchronously.
 ---@param chat table
 ---@param cb fun(conn: table|nil)
 ---@param tries? number
 local function await_connection(chat, cb, tries)
-	tries = tries or 150 -- 150 × 100ms ≈ 15s
+	tries = tries or 150 -- ~15s
 	if not api.nvim_buf_is_valid(chat.bufnr) then
 		return cb(nil)
 	end
@@ -1249,8 +1086,7 @@ local function await_connection(chat, cb, tries)
 	end, 100)
 end
 
----Reopen a saved chat. With a `session_id` the agent's own session is resumed and its
----transcript replayed; without one there is nothing to resume, so the chat simply
+---Reopen a saved chat. With a session_id the agent's session is resumed; without one the chat
 ---reopens empty on its original provider/model.
 ---@param entry { session_id?: string, title?: string, provider?: string, model?: string, opts?: table }
 ---@param opts? { hide?: boolean } hide: park the chat out of sight once restored
@@ -1271,9 +1107,8 @@ function M.restore_session(entry, opts)
 
 	consume_pending(entry)
 
-	-- Corrected here as well as inside resolve_chat_adapter_for, because these opts are also
-	-- what post_create records as `_ducktape_opts` — the status panel and winbar read that, and
-	-- reporting a mode the session is not actually running under is its own kind of wrong.
+	-- Correct here too: post_create records these as `_ducktape_opts`, which the status panel and
+	-- winbar read, and reporting the wrong mode is its own bug.
 	local saved_opts = vim.deepcopy(entry.opts or {})
 	saved_opts.mode = (require("ducktape.providers").opts_for("chat", provider) or {}).mode
 
@@ -1282,12 +1117,8 @@ function M.restore_session(entry, opts)
 		return ui.say(("[ducktape] could not resolve adapter for %s"):format(tostring(provider)), vim.log.levels.ERROR)
 	end
 
-	-- `hidden` matters for more than tidiness: these restores land on timers, and a
-	-- chat created visible opens a window and takes focus whenever it happens to fire.
-	-- Doing that under a Telescope picker dismisses it, and any in-flight insert-mode
-	-- keystrokes then hit the locked chat buffer as `E21: 'modifiable' is off`.
-	-- Creating it hidden touches no window at all; `newest_chat()` covers the
-	-- last_chat bookkeeping that Chat.new skips for hidden chats.
+	-- Hidden restores avoid stealing focus from a Telescope picker or hitting `E21` with in-flight
+	-- keystrokes. `newest_chat()` covers the last_chat bookkeeping Chat.new skips for hidden chats.
 	local Chat = require("codecompanion.interactions.chat")
 	local chat = Chat.new({
 		adapter = adapter,
@@ -1298,32 +1129,25 @@ function M.restore_session(entry, opts)
 		return
 	end
 
-	-- Chat.new schedules `vim.treesitter.start(bufnr)` with no language argument, so the
-	-- parser is resolved from the buffer's filetype — and the only thing that sets that
-	-- filetype is ui:open() (via shared/ui.lua's nvim_set_option_value). A hidden chat
-	-- opens no window, so when that scheduled call fires the filetype is still empty, it
-	-- fails inside its own pcall, and the buffer ends up with no markdown highlighting.
-	-- Setting it here, synchronously, gets in ahead of that callback.
+	-- Chat.new schedules treesitter without a language; the filetype is normally set by ui:open().
+	-- Hidden chats have no window, so the scheduled call fails and leaves no markdown highlight.
+	-- Set it synchronously here to get ahead of that callback.
 	if opts.hide then
 		vim.bo[chat.bufnr].filetype = "codecompanion"
 	end
 
 	post_create(chat, { provider = provider, model = entry.model, opts = saved_opts })
 
-	-- A name from the titles store is the user's and outranks the entry's own title,
-	-- which is only ever whatever the agent had auto-generated by the last save. Marking
-	-- it as such is what keeps the agent from taking the name back mid-session; an
-	-- inherited auto-title is deliberately left free to change.
+	-- A user-saved title outranks the entry's auto-generated title. Mark it as user-owned so the
+	-- agent does not take it back mid-session; inherited auto-titles are left free to change.
 	local user_title = sid and M.saved_titles()[sid] or nil
 	local title = user_title or entry.title
 	if user_title then
 		chat._ducktape_user_title = user_title
 	end
 
-	-- Reapplied at every point something else may install a title: post_create sets the
-	-- `provider · model` placeholder, and during session/load the agent pushes its own
-	-- auto-generated one via session_info_update (acp/init.lua:653). Either would
-	-- otherwise replace a name the user chose with <leader>cr.
+	-- Reapply wherever something else may install a title: post_create's placeholder or the
+	-- agent's session_info_update auto-title would otherwise overwrite the user's name.
 	local function apply_saved_title()
 		if title then
 			pcall(chat.set_title, chat, title)
@@ -1332,23 +1156,19 @@ function M.restore_session(entry, opts)
 
 	apply_saved_title()
 
-	-- Nothing to resume: the chat had no exchange behind it, so it reopens empty.
-	-- Attempting a load here is what used to raise "Resource not found".
+	-- No exchange behind it: reopen empty. Loading here used to raise "Resource not found".
 	if not sid then
 		return chat
 	end
 
-	-- The history is unreachable, but the chat itself stays — it just carries no
-	-- transcript. Keeping it means a chat never silently disappears; it cannot breed
-	-- dead entries either, because the fallback session it now holds has no exchange
-	-- behind it and so is saved without a session ID.
+	-- History is unreachable, but keep the chat so it never silently disappears. The fallback
+	-- session has no exchange, so it is saved without a session ID and cannot breed dead entries.
 	local function no_history(reason)
 		ui.say(("[ducktape] %s — reopened without history"):format(reason), vim.log.levels.WARN)
 	end
 
 	await_connection(chat, function(conn)
-		-- Closed while the history was still loading. Nothing to report: the chat is gone
-		-- because the user shut it, not because the load failed.
+		-- Closed while loading: no need to report a load failure the user caused.
 		if not api.nvim_buf_is_valid(chat.bufnr) then
 			return
 		end
@@ -1356,10 +1176,8 @@ function M.restore_session(entry, opts)
 			return no_history("ACP connection never came up")
 		end
 
-		-- Ask before loading. A session/load for an unknown ID is answered with a
-		-- JSON-RPC error, which CodeCompanion logs at ERROR level and its notify
-		-- handler turns into a full red box on screen — noise for a case we can
-		-- detect quietly first.
+		-- List first: session/load for an unknown ID raises a JSON-RPC error CodeCompanion renders
+		-- as a red box — noise for a case we can detect quietly.
 		if conn.can_list_sessions and conn:can_list_sessions() then
 			local known = false
 			for _, s in ipairs(conn:session_list({ max_sessions = 500 }) or {}) do
@@ -1380,9 +1198,8 @@ function M.restore_session(entry, opts)
 			end,
 		})
 
-		-- _establish_session quietly falls back to session/new when session/load
-		-- fails, so a true return does not mean the session was found — the surviving
-		-- session ID is the only reliable signal.
+		-- _establish_session falls back to session/new on failure, so the only reliable signal is
+		-- whether the session ID survived.
 		if not ok or conn.session_id ~= sid then
 			return no_history(("session %s could not be loaded"):format(sid:sub(1, 8)))
 		end
@@ -1405,9 +1222,8 @@ local function setup_persistence()
 		callback = save_open_chats,
 	})
 
-	-- Nothing is restored here. The saved entries are simply held as pending, and each
-	-- becomes a real chat only when the user picks it — which is why an nvim start costs no
-	-- agent subprocesses at all, however many chats were open when it last quit.
+	-- Hold saved entries as pending; they become real only when picked, so startup costs no
+	-- agent subprocesses.
 	local saved = read_entries(read_state())
 	if type(saved) == "table" then
 		pending = vim.deepcopy(saved)
@@ -1416,10 +1232,8 @@ end
 
 setup_persistence()
 
----The saved-chat read path, for the suite that guards it against losing chats.
----
----Exposed rather than reimplemented in the test: the first-wins migration that dropped a
----subdirectory's chats would have passed any reimplementation of itself.
+---The saved-chat read path, exposed for tests.
+---Reimplementing it would not catch the first-wins migration bug that dropped subdirectory chats.
 ---@param data table<string, table[]>
 ---@param key string
 ---@return table[]|nil entries, string key

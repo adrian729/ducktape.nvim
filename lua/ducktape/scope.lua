@@ -1,21 +1,11 @@
--- What counts as "this project".
---
--- Two things need an answer and used to give different ones. Resumable agent sessions are filtered
--- by repository root, while saved chats key on the working directory — so `:cd` inside one nvim
--- session could leave the two disagreeing about which chats belong here. Both now come through
--- this module, and `opts.session.scope` picks the strategy.
---
--- The default is still `git rev-parse --show-toplevel`, and deliberately: it resolves symlinks, and
--- the agent-reported `cwd` a session list is filtered against is a resolved path. `vim.fs.root`
--- needs no subprocess but does not resolve symlinks, so on a symlinked checkout it would silently
--- filter every session out — which looks exactly like having no sessions at all.
+-- Project scope: saved chats key on cwd, resumable sessions on repository root. Default is
+-- `git rev-parse --show-toplevel` because it resolves symlinks, matching agent-reported paths.
 
 local M = {}
 
 ---@type table<string, string|false>
 local cache = {}
 
----`git rev-parse --show-toplevel`, run in the working directory.
 ---@param cwd string
 ---@return string|nil
 local function git_toplevel(cwd)
@@ -27,20 +17,14 @@ local function git_toplevel(cwd)
 	return root ~= "" and root or nil
 end
 
----The nearest ancestor holding a `.git`, which is a file rather than a directory in a worktree.
 ---@param cwd string
 ---@return string|nil
 local function fs_root(cwd)
 	return vim.fs.root(cwd, ".git")
 end
 
----The project root under a strategy, or nil when there is none.
----
----Cached per working directory *and* per strategy: the two callers ask different questions of the
----same directory, so one cache slot would answer the second with the first's result. Per directory
----rather than once per session because the old version memoised a single answer including the
----negative one, so a `:cd` into a repository still reported "not a repository" for the rest of the
----session.
+---Project root under a strategy, or nil. Cached per cwd and per strategy because the two callers
+---ask different questions of the same directory.
 ---@param strategy? string|fun(cwd: string): string|nil Defaults to `opts.session.scope`
 ---@return string|nil
 function M.root(strategy)
@@ -67,19 +51,14 @@ function M.root(strategy)
 	return root
 end
 
----The key saved state is filed under. Always a string, so a directory outside any repository still
----has somewhere to keep its chats rather than sharing one bucket with every other such directory.
 ---@param strategy? string|fun(cwd: string): string|nil
 ---@return string
 function M.key(strategy)
 	return M.root(strategy) or vim.fn.getcwd()
 end
 
----Does a path belong to the current project?
----
----Used to filter an agent's session list, where `cwd` is whatever the agent recorded. Compared
----after resolving both sides, so a symlinked checkout on one side and a real path on the other
----still match.
+---Whether a path belongs to the current project. Resolves both sides so symlinked checkouts match
+---agent-reported real paths.
 ---@param path string|nil
 ---@return boolean
 function M.contains(path)
@@ -96,8 +75,6 @@ function M.contains(path)
 	return vim.startswith(resolve(path), resolve(root))
 end
 
----Forget what has been worked out, so the next call re-derives it. For tests and for `:cd` handling
----if it ever needs to be explicit.
 function M.clear()
 	cache = {}
 end

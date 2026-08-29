@@ -1,10 +1,5 @@
--- The model cache, and what `auto` resolves to.
---
--- The bug this suite exists for: `auto` used to be "the first free model in whatever list we have",
--- and the two sources of that list disagree on order. A hand-written fallback list is ordered by
--- preference; `opencode models` is alphabetical. So opening the picker once — which is what fills the
--- cache — silently moved `auto` onto whichever free model sorts first, which is opencode's own
--- ambient default. Nothing in the old suites could see it: they never filled the cache.
+-- The model cache and `auto` resolution. `auto` used to be the alphabetically first free model
+-- from the picker-filled cache, not the preferred one; filling the cache is required to see it.
 
 local REPORT = "/tmp/models.out"
 local passed, failed, lines = 0, 0, {}
@@ -37,8 +32,7 @@ local cache = require("ducktape.model_cache")
 local providers = require("ducktape.providers")
 local config = require("ducktape.config")
 
--- Alphabetical, exactly as `opencode models` reports it, so `big-pickle` sorts first among the free
--- ones. That ordering is the whole hazard.
+-- Alphabetical, as `opencode models` reports it, so `big-pickle` sorts first among the free ones.
 local AS_REPORTED = {
 	"auto",
 	"opencode/big-pickle",
@@ -116,9 +110,7 @@ ok(cache.read() == nil, "the file is gone")
 eq("and the sync list is back to the sentinel", #providers.opencode_models(), 1)
 
 section("discovery asks only for what is not already known")
--- What setup calls on a first run, and the reason a fresh install needs no setup step of its own.
--- Counted rather than really spawned: the answers would land asynchronously and overwrite the
--- deliberately-ordered lists these assertions depend on.
+-- Counted, not really spawned: async answers would overwrite the ordered lists the assertions need.
 local spawned, real_system = 0, vim.system
 vim.system = function()
 	spawned = spawned + 1
@@ -133,7 +125,7 @@ end
 providers.clear_cache() -- a new session: memory empty, all three lists on disk
 spawned = 0
 providers.discover_models()
--- Asking `opencode models` and two curls on every single start is what persisting them avoids.
+-- Persisting the lists avoids spawning `opencode models` and two curls on every start.
 eq("nothing is asked when every list is known", spawned, 0)
 
 vim.system = real_system

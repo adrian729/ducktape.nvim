@@ -1,6 +1,4 @@
--- The adversarial cases: ducktape must refuse rather than drive an unhardened agent.
---
--- Run under probe_init.lua with DT_VARIANT=no_extension or setup_throws.
+-- Adversarial cases: bootstrap must refuse when the extension is missing or setup throws.
 local pass, fail = 0, 0
 local function check(ok, what)
 	if ok then
@@ -13,7 +11,7 @@ end
 
 local variant = os.getenv("DT_VARIANT")
 
--- The keymaps exist regardless — that is the hazard, and why bootstrap has to answer for it.
+-- Keymaps exist regardless, so bootstrap must refuse rather than leave a working unhardened map.
 check(vim.fn.maparg(" ci", "n"):match("^<Plug>%(DucktapeInline") ~= nil, "the keymap still exists")
 
 local said = {}
@@ -44,9 +42,7 @@ check(heard:find("not set up", 1, true) ~= nil, "explained that setup did not ru
 check(heard:find("deny agent writes", 1, true) ~= nil, "explained why it refuses")
 
 if variant == "setup_throws" then
-	-- config.lua's validate is the first statement of setup, so this one throws *before* the
-	-- adapters go in and codecompanion's stock claude_code is what is left in place. Refusing is
-	-- the only thing standing between that and a working keymap.
+	-- Validate throws before adapters install, leaving codecompanion's stock claude_code.
 	local claude = require("codecompanion.adapters").resolve("claude_code")
 	check(
 		vim.tbl_get(claude, "defaults", "session_config_options", "mode") == nil,
@@ -55,8 +51,7 @@ if variant == "setup_throws" then
 end
 
 if variant == "late_throw" then
-	-- The case an "are the adapters registered?" check would wave through: they went in before the
-	-- throw, so only the completion flag distinguishes this from a working setup.
+	-- Adapters registered before the throw; only the completion flag catches it.
 	local claude = require("codecompanion.adapters").resolve("claude_code")
 	check(
 		vim.tbl_get(claude, "defaults", "session_config_options", "mode") == "dontAsk",

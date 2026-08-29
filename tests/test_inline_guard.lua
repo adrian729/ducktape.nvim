@@ -39,8 +39,7 @@ package.loaded["ducktape.inline.http"] = {
 
 local api = vim.api
 local inline = require("ducktape.inline")
--- This suite stubs `ducktape.inline.http`, which only the ollama provider routes through — pinned
--- explicitly rather than relying on the shipped default, which is opencode's relay.
+-- Stub ducktape.inline.http, which only the ollama provider routes through; pin it explicitly.
 require("ducktape.providers").set_provider("inline", "ollama")
 local ui = require("ducktape.ui")
 
@@ -64,7 +63,7 @@ end
 
 local NS = api.nvim_get_namespaces()["ducktape_ui"]
 
----Every ducktape_ui extmark on a buffer, with details.
+---All ducktape_ui extmarks on a buffer, with details.
 local function marks_on(bufnr)
 	return api.nvim_buf_get_extmarks(bufnr, NS, 0, -1, { details = true })
 end
@@ -240,8 +239,7 @@ ok(
 	vim.inspect(api.nvim_buf_get_lines(held, 0, -1, false))
 )
 
--- An insertion at the range's top edge is the same position as one below the line above it, and
--- the guarded lines come through untouched either way, so it is left alone rather than reverted.
+-- Top-edge insertion is indistinguishable from inserting below the line above; leave it alone.
 notes = {}
 api.nvim_buf_set_lines(held, 1, 1, false, { "inserted at the top edge" })
 vim.wait(150)
@@ -274,8 +272,7 @@ ok(
 	vim.inspect(api.nvim_buf_get_lines(held, 1, 4, false))
 )
 
--- The other half of the same anchoring bug: a right-gravity end mark is pushed *down* by an edit
--- on the line below, so the range grew over it and the guard reverted an edit it did not own.
+-- Right-gravity end mark is pushed down by an edit on the line below, making the range grow onto it.
 notes = {}
 api.nvim_buf_set_lines(held, 4, 5, false, { "changed below" })
 vim.wait(150)
@@ -305,7 +302,7 @@ local entry = inline.list()[1]
 ok(entry ~= nil and entry.resolve() == 1, "and the request is re-anchored to them", entry and entry.resolve())
 ok(#inline.list() == 1, "it was not cancelled", #inline.list())
 
--- Re-anchored means the answer still lands: the whole point of putting the lines back.
+-- Re-anchoring keeps the answer landing on the restored lines.
 captured[#captured].on_done("```lua\nrewritten1\nrewritten2\nrewritten3\n```")
 vim.wait(200)
 ok(
@@ -324,8 +321,7 @@ ok(
 say("\n=== a one-line range, replaced wholesale ===")
 
 drain()
--- The case no extmark configuration gets right: the range is entirely its own first line, so
--- every edit to it replaces the row the start mark sits on.
+-- The range is entirely its own first line, so every edit replaces the row the start mark sits on.
 local one_line = target("one_line.lua", { "a", "b", "c", "d" })
 inline.submit({ bufnr = one_line, range = { s0 = 1, e0 = 2, has_selection = true }, instruction = "just this line" })
 notes = {}
@@ -338,7 +334,7 @@ ok(
 )
 ok(inline.list()[1].resolve() == 1, "still anchored to it", inline.list()[1].resolve())
 
--- Again, after a benign edit above has shifted it: the row has to stay exact across both.
+-- After a benign edit above shifts it, the row must stay exact across both cases.
 api.nvim_buf_set_lines(one_line, 0, 1, false, { "a1", "a2", "a3" })
 vim.wait(150)
 ok(inline.list()[1].resolve() == 3, "shifted by an edit above", inline.list()[1].resolve())
@@ -380,9 +376,7 @@ ok(
 	"the run of lines is put back",
 	vim.inspect(api.nvim_buf_get_lines(whole, 0, -1, false))
 )
--- The same request warned about a moment ago. Still said — a second attempt answered with nothing
--- is what confusion is — but not recorded again, since the guard can fire once per keystroke and
--- would otherwise bury every other message.
+-- Same warning as before: still shown, but not recorded again so it does not bury other messages.
 ok(#notes == 1, "the warning is repeated on screen", vim.inspect(notes))
 ok(recorded[#recorded] == false, "but not written to :messages twice", vim.inspect(recorded))
 
@@ -405,8 +399,7 @@ ok(
 say("\n=== a change that sweeps past the range cancels the request ===")
 
 notes = {}
--- Rows 0-4 replaced: the range's own lines plus the ones either side. Only the range's former text
--- is known, so guessing at the rest would be worse than stopping.
+-- Replacing the range and its neighbours leaves nothing to anchor to; stop instead of guessing.
 api.nvim_buf_set_lines(whole, 0, 5, false, { "SWEPT" })
 vim.wait(200)
 ok(#inline.list() == 0, "the request was cancelled", #inline.list())
@@ -442,7 +435,6 @@ ok(
 	vim.inspect(api.nvim_buf_get_lines(two, 0, -1, false))
 )
 ok(#inline.list() == 2, "with both still in flight", #inline.list())
--- An edit between them touches neither.
 notes = {}
 api.nvim_buf_set_lines(two, 2, 4, false, { "FREE", "TO", "EDIT" })
 vim.wait(150)
@@ -462,7 +454,7 @@ inline.submit({ bufnr = both, range = { s0 = 0, e0 = 2, has_selection = true }, 
 local first_cb = captured[#captured]
 inline.submit({ bufnr = both, range = { s0 = 2, e0 = 4, has_selection = true }, instruction = "second block" })
 
--- Three lines where there were two, so everything below shifts under the second request's feet.
+-- The first reply adds a line, shifting everything below the second request's feet.
 first_cb.on_done("```lua\nA1\nA2\nA3\n```")
 vim.wait(200)
 local waiting
@@ -492,10 +484,8 @@ drain()
 local typing = target("typing.lua", { "t0", "t1", "t2", "t3" })
 inline.submit({ bufnr = typing, range = { s0 = 1, e0 = 3, has_selection = true }, instruction = "no typing here" })
 
--- Driven by the autocmd rather than by a keypress, because headless nvim cannot enter insert mode
--- at all: startinsert, nvim_input("i") and feedkeys all leave mode() == "n" with no UI attached, so
--- the InsertEnter handler would never run. That the scheduled stopinsert actually leaves insert mode
--- — it does nothing when called straight from InsertEnter — is verified interactively instead.
+-- Headless nvim cannot enter insert mode, so drive the autocmd directly; the scheduled stopinsert
+-- behaviour is verified interactively.
 notes = {}
 api.nvim_win_set_cursor(0, { 2, 0 })
 api.nvim_exec_autocmds("InsertEnter", { buffer = typing })
@@ -517,12 +507,12 @@ say("\n=== undo is held off while lines are held ===")
 
 drain()
 local undone = target("undoing.lua", { "u0", "u1", "u2", "u3" })
--- A buffer-local `u` of someone else's, to check the lock gives it back rather than eating it.
+-- Buffer-local `u`/`C-r` mappings check the lock hands the keys back, not eats them.
 local mine, redone = 0, 0
 vim.keymap.set("n", "u", function()
 	mine = mine + 1
 end, { buffer = undone })
--- Reported by nvim as `<C-R>`, which is the case the keycode comparison exists for.
+-- nvim reports <C-r> as `<C-R>`, the case the keycode comparison handles.
 vim.keymap.set("n", "<C-r>", function()
 	redone = redone + 1
 end, { buffer = undone })
@@ -559,8 +549,7 @@ ok(
 	vim.inspect(api.nvim_buf_get_lines(undone, 0, -1, false))
 )
 
--- Undo is the one edit the guard cannot answer: a step of it can take the whole run of lines away,
--- which used to cancel the request outright. Measured before the lock: two `u` presses did it.
+-- Undo can remove the whole run of lines at once; without the lock it cancelled the request outright.
 drain()
 local back = mapping_for(undone, "u")
 ok(

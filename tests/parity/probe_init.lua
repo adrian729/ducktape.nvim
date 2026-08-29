@@ -1,6 +1,4 @@
--- Parametrised variant of the throwaway config, for the cases that need a different spec than the
--- parity one. $DT_VARIANT picks the case; the plugin tree is the one already installed under the
--- test XDG roots, so nothing is cloned again.
+-- Parametrised test config. $DT_VARIANT selects the case; the plugin tree is already installed.
 local variant = os.getenv("DT_VARIANT") or "default"
 
 vim.g.mapleader = " "
@@ -14,7 +12,7 @@ elseif variant == "globals_false" then
 elseif variant == "wrong_route" then
 	vim.g.ducktape = { providers = {}, nonsense = true }
 elseif variant == "taken_key" then
-	-- Set before lazy.setup, i.e. before plugin/ducktape.lua runs: the maparg path.
+	-- Set before lazy.setup / plugin/ducktape.lua: the maparg path.
 	vim.keymap.set("n", "<leader>ci", "<cmd>echo 'mine'<cr>", { desc = "mine" })
 elseif variant == "own_plug" then
 	-- The hasmapto path: their own key already points at the action.
@@ -22,9 +20,7 @@ elseif variant == "own_plug" then
 end
 
 if variant == "late_throw" then
-	-- A throw *after* install_adapters, which is the case a "are the adapters registered?" check
-	-- would wave through. config.lua's own vim.validate cannot produce it: it runs first, before
-	-- the adapters go in.
+	-- Throw after adapters are registered: only the completion flag catches this.
 	package.loaded["ducktape.reload"] = {
 		setup = function()
 			error("probe: a later setup step failed")
@@ -39,7 +35,7 @@ local cc_opts = { extensions = { ducktape = { opts = {} } } }
 if variant == "no_extension" then
 	cc_opts = {}
 elseif variant == "setup_throws" then
-	-- Trips config.lua's vim.validate part-way through setup, after the adapters went in.
+	-- Trips vim.validate mid-setup, after adapters are registered.
 	cc_opts = { extensions = { ducktape = { opts = { providers = "not a table" } } } }
 end
 
@@ -53,8 +49,7 @@ local spec = {
 	},
 	{ "nvim-treesitter/nvim-treesitter", branch = "main", lazy = false },
 }
--- `enabled = false` rather than leaving it out of the spec: ducktape's own lazy.lua declares
--- telescope as a dependency, so omitting it here does not remove it.
+-- `enabled = false` is required because ducktape's lazy.lua declares telescope a dependency.
 table.insert(spec, {
 	"nvim-telescope/telescope.nvim",
 	dependencies = { "nvim-lua/plenary.nvim" },

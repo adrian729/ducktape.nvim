@@ -1,6 +1,4 @@
--- Real round trips, in the throwaway config: an ACP agent through the pool, and the ollama HTTP
--- transport inline requests use by default. This is the part no unit test can stand in for — it is
--- what proves the adapters ducktape installs actually work, not merely that they resolve.
+-- Round-trip tests: prove the installed adapters work, not just resolve.
 local pass, fail = 0, 0
 local function check(ok, what)
 	if ok then
@@ -52,7 +50,7 @@ end
 acp("claude")
 acp("opencode")
 
--- The ollama HTTP transport, which is what <leader>ci uses out of the box.
+-- The ollama HTTP transport used by <leader>ci.
 do
 	local http = require("ducktape.inline.http")
 	local reply, err, done = nil, nil, false
@@ -72,7 +70,7 @@ do
 	check(type(reply) == "string" and #reply > 0, "ollama: got a reply — " .. tostring(reply and reply:sub(1, 60)))
 end
 
--- Draining is what a session end does, and it must not leave orphans behind.
+-- Shutdown must drain the pool without leaving orphan processes.
 pool.shutdown()
 vim.wait(5000, function()
 	return #pool.status() == 0

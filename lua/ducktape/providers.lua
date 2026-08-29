@@ -1,117 +1,53 @@
--- Single source of truth for the AI integration: which providers exist, what options each
--- carries, what is currently selected, and how far each transport can reach into the machine.
--- Inline, chat and the status panel all read this module, which is what makes the option UX
--- shared rather than reimplemented per surface.
---
--- This is a *registry*, not a fixed set. Every provider is described by a spec, and every
--- consumer reads the spec rather than branching on a provider's name. Adding a fourth provider
--- is `providers.<name> = { … }` in your own config; nothing here or in the surfaces needs an
--- edit. What a spec may say is documented on the shipped three below and in `:h ducktape`.
---
--- Three properties are load-bearing enough to be worth stating up front, because they are what
--- keeps an unknown provider from being worse than no provider:
---
---   * a provider's inline transport comes from its own spec, so it can never be routed through
---     another provider's relay (which is what a name-keyed if-chain used to do);
---   * an ACP provider's write defence is *derived from the live agent* when the spec does not
---     name one, by choosing the most restrictive mode the agent itself advertises;
---   * if no write-denying mode can be found, inline-over-ACP is withheld for that provider
---     alone. Chat still works. Setup still succeeds. `:checkhealth ducktape` says so.
+-- Registry of AI providers: specs, current selections, transports, and model discovery.
+-- Consumers read specs rather than branching on provider names, so a provider added through
+-- config appears in every surface without edits elsewhere.
 
 local M = {}
 
--- Whether a transport can touch the filesystem is a property of the transport, not of which
--- keymap was pressed. Measured, not assumed: neither shipped agent uses the client-mediated fs/*
--- path, so what a transport can reach is decided by the agent process, not by us.
 M.transports = {
 	http = { read = false, write = false, note = "no filesystem access at all" },
 	relay = { read = false, write = false, note = "no filesystem access at all" },
 	acp = { read = true, write = false, note = "can read any file you can; writes denied" },
 }
 
--- Sentinel for a model option whose value is "let the provider walk its own fallback list"
--- instead of pinning one model, so a dead model degrades instead of failing.
+-- "Use the provider's own fallback list" sentinel. Degrades gracefully when a pinned model dies.
 M.AUTO = "auto"
 
--- Session `mode` values that deny writes, most preferred first. Used to *derive* an inline write
--- defence for an ACP provider whose spec does not name one: the agent advertises its own modes
--- through session config options, so the safe one can be found rather than configured.
---
--- Order is by usefulness-while-still-safe, not by strictness. `dontAsk` auto-denies mutating tools
--- while leaving the agent otherwise normal, which is what inline wants. `plan` is read-only and
--- also safe, but some agents treat it as "produce a plan, not an answer", so it is second.
---
--- Modes that *ask* are deliberately absent. Inline has no UI to answer a permission prompt, so an
--- asking mode is not a defence — it is a hang.
+-- Write-denying modes, most preferred first. Used to derive a guard when a spec names none.
+-- Asking modes are excluded: inline has no UI to answer permission prompts.
 M.SAFE_MODES = { "dontAsk", "plan", "readOnly", "readonly", "read-only" }
 
--- Which tier an opencode model belongs to is decided by its provider prefix, per opencode's own
--- prefix rule: `opencode/` is the free tier, `opencode-go/` is the Go subscription. Not by the
--- `-free` suffix, which `opencode/big-pickle` does not carry despite being free.
 local GO_PREFIX = "opencode-go/"
 local FREE_PREFIX = "opencode/"
 
----Is this a free-tier opencode model?
 ---@param model string
 ---@return boolean
 function M.is_free_opencode_model(model)
 	return type(model) == "string" and vim.startswith(model, FREE_PREFIX)
 end
 
----Is this an OpenCode Go model, i.e. one that draws on the Go subscription?
 ---@param model string
 ---@return boolean
 function M.is_go_opencode_model(model)
 	return type(model) == "string" and vim.startswith(model, GO_PREFIX)
 end
 
---=============================================================================
--- The registry
---=============================================================================
-
--- What a provider spec may carry. Everything except `label` has a default, and the defaults are
--- chosen so that the smallest possible spec is also a safe one.
---
---   label            string, shown wherever the provider is named
---   kind             "acp" | "http". Inferred from codecompanion's adapter registry if absent.
---   adapter          string | fun(scope, opts): string — the codecompanion adapter name
---   endpoints        table<string, { url, adapter, api_key_env?, tier? }> for HTTP providers
---                    whose endpoint decides which models exist (see ollama)
---   options          table<string, { label, category?, values?, dynamic? }>
---   inline_options   string[] — which options inline offers, in order
---   chat_options     string[] — likewise for chat
---   transports       { shallow = "http"|"relay"|"acp", deep = … }. Defaulted from `kind`.
---   relay            { cmd, exits } — a tool-free subprocess transport, if the provider has one
---   guard            see `M.effective_guard`
---   models           see `M.models_async`
---   auto             { prefer = string[], eligible = fun(model): boolean, warn = string }
---   tier             fun(model, opts): { label, free } | nil
---   capabilities     { resumable_sessions = boolean }
---   value_notes      table<string, table<string, string>> — what a value means, per option
---   option_notes     table<string, string> — a standing caveat about an option
+-- Provider spec schema documented in `:h ducktape`.
 ---@type table<string, table>
 M.providers = {
 	ollama = {
 		label = "Ollama",
 		kind = "http",
-		-- The endpoint is part of which model you get rather than a separate question: the two
-		-- lists barely overlap. Describing it as data is what lets the picker, the model
-		-- discovery and the adapter choice all derive from one place.
-		-- `extends` names the codecompanion adapter each endpoint builds on, which is what lets
-		-- `ducktape.setup` generate the adapter definitions instead of them being written out by
-		-- hand. The two shipped ollama adapters come from exactly this, so the path an added
-		-- provider takes is the one the shipped provider already uses.
+		-- Endpoint is part of which model you get; describing it as data keeps picker, discovery
+		-- and adapter generation in one place.
 		endpoints = {
 			cloud = {
 				url = "https://ollama.com",
 				adapter = "ollama_cloud",
 				extends = "ollama",
 				api_key_env = "OLLAMA_API_KEY",
-				-- ollama's free cloud tier: light GPU-time usage, 1 concurrent model, so free
-				-- but rate-limited.
 				tier = { label = "free · cloud", free = true },
 			},
-			-- Runs on this machine; no account, no quota.
 			["local"] = {
 				url = "http://localhost:11434",
 				adapter = "ollama",
@@ -125,9 +61,6 @@ M.providers = {
 		options = {
 			endpoint = { label = "Endpoint", values = { "cloud", "local" } },
 			model = { label = "Model", dynamic = true },
-			-- `to_schema` converts a stored option value into what the codecompanion adapter schema
-			-- wants. Only needed where the two disagree, as here: the option is an enum the picker
-			-- can cycle, the schema field is a boolean.
 			think = {
 				label = "Think",
 				values = { "off", "on" },
@@ -136,7 +69,6 @@ M.providers = {
 				end,
 			},
 		},
-		-- Plain HTTP: there is no agent process, so there is no session to resume.
 		capabilities = { resumable_sessions = false },
 	},
 
@@ -144,50 +76,30 @@ M.providers = {
 		label = "Claude",
 		kind = "acp",
 		adapter = "claude_code",
-		-- claude-agent-acp authenticates with CLAUDE_CODE_OAUTH_TOKEN (no ANTHROPIC_API_KEY
-		-- anywhere in this config), so usage counts against the subscription.
 		tier = function()
 			return { label = "subscription · claude", free = false }
 		end,
-		-- The seed is what the picker shows before an agent has ever run; the live session is
-		-- authoritative and replaces it, so a model released after this was written still appears.
 		models = { strategy = "live_session", seed = { "default", "sonnet", "opus", "haiku" } },
-		-- Named rather than derived. `plan` would also be safe and `M.SAFE_MODES` would find it,
-		-- but `dontAsk` is the better answer here and only the spec knows that: it denies mutating
-		-- tools while leaving the agent otherwise normal, where claude's `plan` produces a plan
-		-- instead of an edit.
 		guard = { required = { mode = "dontAsk" } },
 		inline_options = { "model", "effort", "fast" },
 		chat_options = { "model", "effort", "fast", "mode", "agent" },
 		options = {
-			-- Values below were read off a live session's configOptions. The status panel
-			-- re-resolves them from the connection, since the set is model-dependent.
 			model = { label = "Model", category = "model", values = { "default", "sonnet", "opus", "haiku" } },
 			effort = {
 				label = "Effort",
 				category = "thought_level",
 				values = { "default", "low", "medium", "high", "xhigh", "max" },
 			},
-			-- Offered only on models that support it — opus does, sonnet does not. Sending it
-			-- for a model that lacks it is harmless but logs a warning on every spawn, so it
-			-- stays unset by default and the status panel adds it when the session offers it.
+			-- opus supports it, sonnet does not; harmless but logs warnings, so unset by default.
 			fast = { label = "Fast", category = "model_config", values = { "on", "off" } },
-			-- What each value does, read off the agent rather than guessed from the name:
-			-- `default` asks before every mutating tool call, `acceptEdits` applies edits
-			-- unannounced, `plan` is read-only, and `dontAsk` auto-*denies* rather than
-			-- auto-allowing (acp-agent.js:1615 lists it beside rule-based denials).
 			mode = {
 				label = "Mode",
 				category = "mode",
 				values = { "auto", "default", "acceptEdits", "plan", "dontAsk", "bypassPermissions" },
 			},
-			-- category = nil in the agent's own schema, so it can only be set after the session
-			-- exists, via conn:set_config_option("agent", …). Chat-only. `after_session` is what
-			-- tells chat to stash it and apply it on the first submit instead of at Chat.new time.
+			-- category = nil in the agent schema; set after session exists. Chat-only.
 			agent = { label = "Agent", dynamic = true, category = nil, after_session = true },
 		},
-		-- What a value means where the name does not say it, and where getting it wrong is
-		-- expensive. Two of mode's six values read as the opposite of what they do.
 		value_notes = {
 			mode = {
 				default = "asks before editing",
@@ -198,8 +110,6 @@ M.providers = {
 				auto = "agent decides",
 			},
 		},
-		-- `fast` is model-dependent and there is no per-model list to filter by, so the row says
-		-- so rather than pretending to.
 		option_notes = { fast = "opus only" },
 		capabilities = { resumable_sessions = true },
 	},
@@ -208,15 +118,9 @@ M.providers = {
 		label = "OpenCode",
 		kind = "acp",
 		adapter = "opencode",
-		-- opencode's published limits — $12/5h, $30/wk, $60/mo rolling windows, and "Free models
-		-- don't count" — so Go models are what consume them. Both subscriptions are labelled the
-		-- same way on purpose: an earlier revision called Go "paid" because its allowance happens
-		-- to be denominated in dollars while Claude's is not, but that is the unit the window is
-		-- measured in, not who is paying. Neither bills per token.
+		-- Go subscription draws on $12/5h, $30/wk, $60/mo windows; "free" models do not count.
 		tier = function(model)
 			if model == M.AUTO then
-				-- The relay only ever walks free models, and `resolve_chat_option_value` pins a
-				-- free one when a live session needs something concrete, so this cannot cost.
 				return { label = "free", free = true }
 			end
 			if M.is_go_opencode_model(model) then
@@ -226,18 +130,11 @@ M.providers = {
 				return { label = "free", free = true }
 			end
 		end,
-		-- `opencode models` is the only source that knows about the Go subscription, and the only
-		-- one that knows what *this* machine is entitled to. It needs no live agent, which is why
-		-- it beats asking a session.
+		-- `opencode models` is the only source that knows about the Go subscription and what this
+		-- machine is entitled to; it needs no live agent.
 		models = {
 			strategy = "subprocess",
 			cmd = { "opencode", "models" },
-			-- Free first: the option that consumes nothing is the one that should be under the
-			-- cursor when the list opens, with the Go tier a deliberate scroll away.
-			--
-			-- `ollama-cloud/*` entries are dropped: opencode can reach them, but there is an
-			-- ollama provider for those already, and listing them twice under two providers would
-			-- only raise the question of which one to pick.
 			parse = function(stdout)
 				local free, go = {}, {}
 				for line in (stdout or ""):gmatch("[^\r\n]+") do
@@ -253,15 +150,9 @@ M.providers = {
 				vim.list_extend(out, go)
 				return out
 			end,
-			-- The sentinel alone is not an answer, so this counts as "nothing came back".
 			empty_when = 1,
 			sentinel = { M.AUTO },
 		},
-		-- Which free model the AUTO sentinel becomes when a live session has to be pinned to
-		-- something real. A preference, not a fact, which is why it is configured rather than
-		-- derived: what a machine *can* reach comes from `opencode models`, but that is
-		-- alphabetical, and letting the order decide put AUTO on opencode's own ambient default.
-		-- Free-tier names change, so an entry that no longer exists is skipped, not an error.
 		auto = {
 			prefer = {
 				"opencode/deepseek-v4-flash-free",
@@ -271,36 +162,22 @@ M.providers = {
 				"opencode/north-mini-code-free",
 				"opencode/nemotron-3-ultra-free",
 			},
-			-- AUTO is what a user picked *instead of* naming a model, so resolving it onto a
-			-- subscription model would spend budget on a value they never chose.
+			-- AUTO must never resolve onto a subscription model: the user did not choose one.
 			eligible = function(model)
 				return M.is_free_opencode_model(model)
 			end,
 			warn = "no free opencode model is known yet, so this session falls back to opencode's own "
 				.. "default — :Ducktape models asks opencode what it can reach",
 		},
-		-- The tool-free relay, used for shallow inline. Guaranteed no repo access, free model.
-		-- Native to `inline/relay.lua`, not a shelled-out script: it composes `opencode run`
-		-- itself, walking `auto.prefer` (below) until one model answers. That also means no `jq`,
-		-- and no dependency on anything in the user's own opencode config — the agent it runs
-		-- under is self-provisioned into a project-local opencode.json ducktape owns, so a
-		-- colleague with a bare `opencode` install gets the same tool-free path unmodified.
-		--
-		-- Why this and not ACP for shallow inline: `opencode acp` has no --agent flag, and denying
-		-- a tool the model wants stops the execution but not the attempt, so tool-call markup leaks
-		-- into the reply as text. The relay pairs the same deny set with a prompt telling the model
-		-- it has no tools, which stops the attempt at source.
+		-- Tool-free relay for shallow inline. Native to `inline/relay.lua`; it composes
+		-- `opencode run` itself, walking `auto.prefer` until one answers. Denying tools on the ACP
+		-- path leaks `<tool_call>` markup into replies; pairing the deny set with a "no tools"
+		-- prompt stops the attempt at source.
 		relay = true,
 		transports = { shallow = "relay", deep = "acp" },
-		-- Derived rather than named: opencode's write defence is the OPENCODE_PERMISSION deny set
-		-- below, which is a request and not something a session reports back. `M.SAFE_MODES` finds
-		-- `plan` among the modes opencode advertises, which *is* readable off the live session —
-		-- so the deep inline path gets a verified defence as well as a requested one.
 		guard = {
 			env = {
-				-- Denying every tool backfires: the model still attempts one, nothing parses the
-				-- attempt, and raw <tool_call> markup leaks into the reply as text. Allowing reads
-				-- removes the leak entirely.
+				-- Denying every tool leaks raw `<tool_call>` markup; allowing reads removes the leak.
 				OPENCODE_PERMISSION = {
 					edit = "deny",
 					write = "deny",
@@ -313,11 +190,8 @@ M.providers = {
 				},
 			},
 			chat_env = {
-				-- Chat is meant to be able to change things, so the mutating tools are `ask`
-				-- rather than `deny` — the same "show me before you do it" stance claude's
-				-- `default` mode gives. Chat used to drop the permission block entirely, which
-				-- handed it silent write access; nothing announced an edit and nvim did not even
-				-- reload the file.
+				-- Chat is meant to change things. `ask` gives the same "show me first" stance as
+				-- claude's `default`. Dropping the block handed chat silent write access.
 				OPENCODE_PERMISSION = {
 					edit = "ask",
 					write = "ask",
@@ -341,11 +215,8 @@ M.providers = {
 	},
 }
 
--- Free-first by policy. Inline defaults to opencode's relay, model left on `AUTO` rather than
--- pinned: `auto.prefer` above already puts `opencode/deepseek-v4-flash-free` first, so a fresh
--- install gets exactly that model on the first request — but pinning would throw away the walk
--- that lets the relay degrade onto the next preferred model if this one is ever renamed or
--- retired, which is a real risk for a free-tier name and not one worth taking for no latency gain.
+-- Free-first. Inline defaults to opencode's relay with AUTO so the relay can degrade onto the
+-- next preferred model if one is renamed/retired.
 M.defaults = {
 	inline = {
 		provider = "opencode",
@@ -359,29 +230,18 @@ M.defaults = {
 		provider = "claude",
 		opts = {
 			ollama = { endpoint = "cloud", model = "gpt-oss:120b", think = "off" },
-			-- `default` rather than `acceptEdits`: the agent asks before it writes, and
-			-- CodeCompanion answers with a diff of the proposed change. Edits landing
-			-- unannounced is worth avoiding even now that open buffers follow them (ducktape.reload)
-			-- — seeing the diff first is the difference between reviewing a change and
-			-- discovering it. Switch a single session with <leader>cs if it gets tedious.
 			claude = { model = "opus", effort = "xhigh", fast = "off", mode = "default" },
 			opencode = { model = M.AUTO, mode = "build" },
 		},
 	},
 }
 
---=============================================================================
--- Spec access
---=============================================================================
-
----The spec for a provider, or nil.
 ---@param provider string|nil
 ---@return table|nil
 function M.spec(provider)
 	return provider and M.providers[provider] or nil
 end
 
----Every provider name, sorted, so every surface iterates in the same order.
 ---@param filter? fun(spec: table, name: string): boolean
 ---@return string[]
 function M.names(filter)
@@ -395,8 +255,6 @@ function M.names(filter)
 	return out
 end
 
----What kind of transport backs this provider. Explicit in the spec, or inferred from
----codecompanion's own adapter registry, which is the only other place that knows.
 ---@param provider string
 ---@return "acp"|"http"
 function M.kind(provider)
@@ -407,8 +265,7 @@ function M.kind(provider)
 	if spec.kind then
 		return spec.kind
 	end
-	-- Inferred lazily rather than at `apply` time: codecompanion's config is what holds the
-	-- answer, and a spec can be read before it has been set up.
+	-- Infer from codecompanion's adapter registry, which may not be set up when a spec is first read.
 	local ok, cc = pcall(require, "codecompanion.config")
 	if ok and spec.adapter and type(spec.adapter) == "string" then
 		if cc.adapters and cc.adapters.acp and cc.adapters.acp[spec.adapter] then
@@ -418,7 +275,6 @@ function M.kind(provider)
 	return spec.relay and "acp" or "http"
 end
 
----The endpoints table for a provider, always a table.
 ---@param provider string
 ---@return table<string, table>
 function M.endpoints(provider)
@@ -426,8 +282,6 @@ function M.endpoints(provider)
 	return (spec and spec.endpoints) or {}
 end
 
----Endpoint names for a provider, in the order the `endpoint` option lists them so the picker and
----the discovery loop agree, falling back to sorted order.
 ---@param provider string
 ---@return string[]
 function M.endpoint_names(provider)
@@ -453,18 +307,10 @@ function M.endpoint_names(provider)
 	return out
 end
 
---=============================================================================
--- Selection
---=============================================================================
-
 ---@type table<string, { provider: string, opts: table<string, table> }>|nil
 local state
 
----The live selection, seeded from the defaults on first use.
----
----Resolved lazily rather than at chunk level. A keymap can pull this module in before
----`ducktape.setup` has merged the user's config — the bootstrap contract makes that unlikely, not
----impossible — and a snapshot taken then would silently ignore whatever they configured.
+---Lazy selection, seeded from defaults. A keymap can require this before setup merged user config.
 ---@return table
 local function selection()
 	if not state then
@@ -473,12 +319,8 @@ local function selection()
 	return state
 end
 
----Give every known provider an options table in every scope.
----
----Without this, a provider added through `opts.providers` but not through `opts.defaults` is
----selectable and then throws on the first read: `current(scope).opts` is nil, so `.opts.model`,
----`set_option` and the adapter lookup all fail. `providers` and `defaults` arrive as independent
----config keys, so nothing else cross-checks them.
+---Ensure every known provider has an options table in every scope, so a provider added through
+-- `opts.providers` without a matching `opts.defaults` entry does not throw on first read.
 ---@param into table
 local function seed_opts(into)
 	for _, scope in ipairs({ "inline", "chat" }) do
@@ -490,11 +332,7 @@ local function seed_opts(into)
 	end
 end
 
----Merge the user's `providers` and `defaults` overrides into the shipped tables.
----
----Called once from `ducktape.setup`. Re-seeds the selection so an override to `defaults` lands
----even if something already read the selection into existence.
----@param cfg table The resolved ducktape config
+---@param cfg table
 function M.apply(cfg)
 	if cfg.providers and next(cfg.providers) then
 		M.providers = vim.tbl_deep_extend("force", M.providers, cfg.providers)
@@ -504,8 +342,7 @@ function M.apply(cfg)
 	end
 	seed_opts(M.defaults)
 
-	-- A selected provider that does not exist is a typo worth catching here rather than at the
-	-- first keypress, and falling back is better than leaving the scope unusable.
+	-- Catch a selected provider that does not exist now rather than at first keypress.
 	for _, scope in ipairs({ "inline", "chat" }) do
 		local sel = M.defaults[scope]
 		if sel and sel.provider and not M.providers[sel.provider] then
@@ -525,21 +362,14 @@ function M.apply(cfg)
 	state = vim.deepcopy(M.defaults)
 end
 
----The current selection for a scope
 ---@param scope "inline"|"chat"
 ---@return { provider: string, opts: table, spec: table }
 function M.current(scope)
 	local sel = selection()[scope]
 	local provider = sel.provider
-	-- `or {}` rather than a bare index: a provider added without a matching `defaults` entry used
-	-- to make every reader of `.opts` throw. seed_opts covers the configured path; this covers a
-	-- provider written straight into `M.providers` at runtime.
 	return { provider = provider, opts = sel.opts[provider] or {}, spec = M.providers[provider] }
 end
 
----The live options for a provider within a scope, selected or not. `M.current` only reaches
----the selected provider's, which is not enough when restoring a chat that belongs to the
----other one.
 ---@param scope "inline"|"chat"
 ---@param provider string
 ---@return table|nil
@@ -574,17 +404,8 @@ function M.set_option(scope, key, value)
 	return true
 end
 
---=============================================================================
--- Transports and adapters
---=============================================================================
-
----Which transport a provider uses for a given inline keymap.
----
----Read off the spec, never guessed from the name. The default for an ACP provider is its own
----agent for both depths: routing an unknown provider through another provider's relay — which a
----name-keyed if-chain did — sends the request to a different vendor's script entirely.
 ---@param provider string
----@param deep boolean True for <leader>cI, which invites repo research
+---@param deep boolean True for <leader>cI, which may read the repo
 ---@return "http"|"relay"|"acp"
 function M.transport(provider, deep)
 	local spec = M.spec(provider)
@@ -595,8 +416,6 @@ function M.transport(provider, deep)
 	if M.kind(provider) == "http" then
 		return "http"
 	end
-	-- An ACP provider with a relay uses it for the shallow path only, since the relay is the
-	-- tool-free half of the pair and `deep` is the one that may read the repo.
 	if spec and spec.relay and not deep then
 		return "relay"
 	end
@@ -605,20 +424,13 @@ end
 
 ---@param provider string
 ---@param deep boolean
----@return table reach The transports entry for this provider/keymap pair
+---@return table
 function M.reach(provider, deep)
 	return M.transports[M.transport(provider, deep)]
 end
 
----Read a provider field out of the resolved config, so a value set through `opts` lands even when
----`M.apply` has not run.
----
----`apply` merges `opts.providers` into the specs, and after it has run this and the spec agree. But
----the config can legitimately be set without a full setup — and the deprecated `opts.opencode.*`
----keys are folded into `opts.providers.opencode` by `config.setup`, so looking here is also what
----keeps those working.
 ---@param provider string
----@param ... string Path within the provider's config entry
+---@param ... string
 ---@return any
 local function from_config(provider, ...)
 	local ok, cfg = pcall(function()
@@ -630,7 +442,6 @@ local function from_config(provider, ...)
 	return vim.tbl_get(cfg, "providers", provider, ...)
 end
 
----Whether a provider has a tool-free relay transport at all.
 ---@param provider string
 ---@return true|nil
 function M.relay(provider)
@@ -641,12 +452,6 @@ function M.relay(provider)
 	return true
 end
 
----The ordered, free-tier model list a provider's relay walks when no model is pinned.
----
----Reuses `auto.prefer` (and its config override) rather than a second list: the relay's fallback
----order and AUTO's live-session pin are the same preference, just consumed differently — the
----relay tries each in turn until one answers, a live session pins the first one `M.models` still
----offers.
 ---@param provider string
 ---@return string[]
 function M.relay_models(provider)
@@ -664,11 +469,6 @@ function M.relay_models(provider)
 	return out
 end
 
----The codecompanion adapter name backing a provider, for a scope.
----
----`adapter` may be a string, or a function of the scope's options for a provider whose adapter
----depends on them — ollama's endpoint decides between two adapter definitions. An `endpoints`
----table is read for the same purpose without needing a function.
 ---@param provider string
 ---@param scope? "inline"|"chat"
 ---@return string|nil
@@ -692,7 +492,6 @@ function M.adapter_name(provider, scope)
 	return spec.adapter
 end
 
----The codecompanion adapter name backing a provider's ACP transport
 ---@param provider string
 ---@return string|nil
 function M.acp_adapter(provider)
@@ -702,10 +501,6 @@ function M.acp_adapter(provider)
 	return M.adapter_name(provider)
 end
 
----The codecompanion HTTP adapter name for a scope's current provider and endpoint.
----
----Nil for an ACP provider, mirroring `acp_adapter`. Without that check this answered with the ACP
----adapter's name, which every caller would then have resolved down the wrong transport.
 ---@param scope "inline"|"chat"
 ---@return string|nil
 function M.http_adapter(scope)
@@ -716,12 +511,6 @@ function M.http_adapter(scope)
 	return M.adapter_name(provider, scope)
 end
 
----Which provider a codecompanion adapter name belongs to.
----
----The inverse of `adapter_name`, needed because codecompanion hands back an adapter and the
----surfaces think in providers. There were three hand-written copies of this mapping — in the chat
----list, the status panel and the chat itself — and each knew about a different subset of the three
----shipped adapters.
 ---@param name string|nil
 ---@return string|nil
 function M.provider_for_adapter(name)
@@ -741,7 +530,6 @@ function M.provider_for_adapter(name)
 	return nil
 end
 
----The base URL a provider's current endpoint points at, if it has endpoints at all.
 ---@param scope "inline"|"chat"
 ---@param provider? string
 ---@return string|nil
@@ -753,21 +541,12 @@ function M.endpoint_url(scope, provider)
 	return chosen and chosen.url or nil
 end
 
----Base URL the ollama HTTP adapter should point at for a scope's current endpoint.
----@deprecated Use `M.endpoint_url` — kept because it is part of the pre-registry API.
+---@deprecated Use `M.endpoint_url`
 ---@param scope "inline"|"chat"
 ---@return string
 function M.ollama_url(scope)
 	return M.endpoint_url(scope, "ollama") or "http://localhost:11434"
 end
-
---=============================================================================
--- Tiers
---=============================================================================
-
--- What running a model draws on, so the picker can say so where the choice is made. Each claim is
--- traceable from the spec that makes it, because "free" is the kind of label that rots quietly.
--- `free` is what drives the highlight, so anything drawing on a plan reads as such at a glance.
 
 ---@param provider string
 ---@param model string|nil
@@ -792,20 +571,12 @@ function M.model_tier(provider, model, endpoint)
 	if type(spec.tier) == "table" then
 		return spec.tier
 	end
-	-- An unrecognised model: saying nothing beats guessing at what it draws on.
 	return nil
 end
 
---=============================================================================
--- Model lists — resolved live, cached for the nvim session
---=============================================================================
-
 local cache = {}
 
----Seed the session cache from the last run's answers, once.
----
----Without this every start began with an empty picker and an `auto` with nothing to resolve
----against, because both are answered synchronously and every list is discovered asynchronously.
+---Seed the session cache from disk once. Keeps pickers and AUTO from being empty on startup.
 local seeded = false
 local function seed()
 	if seeded then
@@ -819,7 +590,6 @@ local function seed()
 	end
 end
 
----Remember a list for the rest of the session and for the next one.
 ---@param key string
 ---@param models string[]
 local function remember(key, models)
@@ -827,8 +597,6 @@ local function remember(key, models)
 	require("ducktape.model_cache").write(key, models)
 end
 
----The cache key a provider's list lives under. Endpoint providers get one per endpoint, which is
----the shape the persisted file has always had (`ollama:cloud`), so nothing migrates.
 ---@param provider string
 ---@param endpoint? string
 ---@return string
@@ -836,7 +604,6 @@ function M.cache_key(provider, endpoint)
 	return endpoint and (provider .. ":" .. endpoint) or provider
 end
 
----Every list key a provider contributes, so discovery and health can enumerate them.
 ---@param provider string
 ---@return { key: string, endpoint: string|nil }[]
 function M.cache_keys(provider)
@@ -851,11 +618,6 @@ function M.cache_keys(provider)
 	return out
 end
 
----What is already known for a provider, without asking anything. Synchronous and never blocking:
----it answers from the session cache, which is seeded from the last run's persisted answers.
----
----Deliberately silent when there is nothing yet. There is nothing wrong in that state — it is what
----a first run looks like.
 ---@param provider string
 ---@param endpoint? string
 ---@return string[]
@@ -867,14 +629,11 @@ function M.models(provider, endpoint)
 	end
 	local spec = M.spec(provider)
 	local strategy = spec and spec.models or {}
-	-- `values` is the whole answer for a static list. A sentinel is a usable answer where a provider
-	-- has one, and a seed is a static list good enough to pick from until the live one lands.
 	return vim.deepcopy(strategy.values or strategy.sentinel or strategy.seed or {})
 end
 
----An HTTP list endpoint — ollama's `/api/tags`, or anything else shaped like it.
 ---@param provider string
----@param endpoint string|nil Nil is reported as an error: this strategy needs an endpoint to ask.
+---@param endpoint string|nil
 ---@param strategy table
 ---@param cb fun(models: string[]|nil, err: string|nil)
 local function fetch_http_tags(provider, endpoint, strategy, cb)
@@ -918,7 +677,6 @@ local function fetch_http_tags(provider, endpoint, strategy, cb)
 	end)
 end
 
----A subprocess that prints one model per line, or whatever `parse` makes of its stdout.
 ---@param provider string
 ---@param strategy table
 ---@param cb fun(models: string[]|nil, err: string|nil)
@@ -954,18 +712,6 @@ local function fetch_subprocess(provider, strategy, cb)
 	end)
 end
 
----Ask a provider what models this machine can reach, then cache it for this session and the next.
----
----Which question gets asked comes from the spec's `models` strategy:
----
----  http_tags     GET <endpoint.url><path>, one entry per endpoint. Needs no agent.
----  subprocess    run `cmd`, parse stdout. Needs no agent.
----  live_session  a running ACP agent is the only source; see `M.enrich_from_session`. What is
----                cached from a previous session is used until one is up, so this never blocks
----                and never spawns an agent just to fill a picker.
----  adapter       delegate to codecompanion's own `schema.model.choices`, which several HTTP
----                adapters implement including their own caching.
----  static        `values`, as given.
 ---@param provider string
 ---@param endpoint string|nil
 ---@param cb fun(models: string[], err: string|nil)
@@ -997,19 +743,10 @@ function M.models_async(provider, endpoint, cb)
 	if strategy.strategy == "adapter" then
 		return M.models_from_adapter(provider, endpoint, done)
 	end
-	-- static and live_session have nothing to ask. Report what is known and let a live session
-	-- enrich it later.
+	-- static and live_session have nothing to ask.
 	cb(known)
 end
 
----Delegate a model list to the codecompanion adapter behind a provider.
----
----HTTP adapters expose `schema.model.choices(adapter, opts)` and several implement real discovery
----with their own caching. `async = true` never blocks: it answers from that cache and kicks off a
----fetch, so the answer may be empty on a cold start and full a moment later.
----
----Not available for ACP adapters — none of codecompanion's carry a `schema` at all, which is why
----`live_session` exists as a separate strategy.
 ---@param provider string
 ---@param endpoint string|nil
 ---@param cb fun(models: string[]|nil, err: string|nil)
@@ -1044,19 +781,12 @@ function M.models_from_adapter(provider, endpoint, cb)
 	end
 	local names = {}
 	for model, value in pairs(choices) do
-		-- `choices` is a map of model → metadata for adapters that carry metadata, and a plain
-		-- array for those that do not.
 		table.insert(names, type(model) == "string" and model or value)
 	end
 	table.sort(names)
 	cb(names)
 end
 
----Take a live ACP session's own model list and cache it.
----
----The only source for a `live_session` provider, and worth doing opportunistically for any ACP
----provider: the agent knows what it currently offers, including models released after this spec
----was written. Never spawns anything — it is called with a connection that already exists.
 ---@param provider string
 ---@param conn table
 ---@return string[]|nil models
@@ -1083,15 +813,7 @@ function M.enrich_from_session(provider, conn)
 	return names
 end
 
----Ask every provider what it can reach, for the side effect of caching the answers.
----
----Called from setup on a machine that has never discovered anything, so the first picker is already
----full instead of filling a moment after it opens. Cheap after that: the lists are read from disk and
----this is not called again.
----
----Silent, including on failure. Nobody has asked for a model list at this point, so an unreachable
----local ollama is not news; every call site that does ask reports its own errors, and
----`:Ducktape models` is the loud version of this.
+---Prime the model cache in the background. Called from setup on first run.
 function M.discover_models()
 	for _, provider in ipairs(M.names()) do
 		for _, entry in ipairs(M.cache_keys(provider)) do
@@ -1100,14 +822,11 @@ function M.discover_models()
 	end
 end
 
----Every provider/endpoint pair worth reporting on, for `:Ducktape models` and `:checkhealth`.
 ---@return { provider: string, endpoint: string|nil, key: string, label: string }[]
 function M.discoverable()
 	local out = {}
 	for _, provider in ipairs(M.names()) do
 		local strategy = (M.spec(provider) or {}).models or {}
-		-- Nothing to ask for these two: static is already an answer, and live_session needs an
-		-- agent nobody has asked to spawn.
 		if strategy.strategy ~= "static" and strategy.strategy ~= "live_session" then
 			for _, entry in ipairs(M.cache_keys(provider)) do
 				table.insert(out, {
@@ -1122,33 +841,24 @@ function M.discoverable()
 	return out
 end
 
----Reset the model caches so the next lookup re-queries. Exposed for the status panel.
----
----Leaves the persisted lists alone: the status panel clears this to pick up a model added since,
----not to lose what it already knows if the query fails. `M.forget_models` is the harder reset.
 function M.clear_cache()
 	cache = {}
 	seeded = false
 end
 
----Throw away everything known about models, on disk included, so the next lookup rediscovers it.
----Behind `:Ducktape models`.
 function M.forget_models()
 	cache = {}
-	seeded = true -- nothing left to seed from, and re-seeding would read the file we just deleted
+	seeded = true
 	require("ducktape.model_cache").clear()
 end
 
---=============================================================================
--- Pre-registry model API, kept so nothing that used it has to change
---=============================================================================
+-- Pre-registry model API.
 
 ---@deprecated Use `M.models_async("ollama", endpoint, cb)`
 ---@param endpoint "local"|"cloud"
 ---@param cb fun(models: string[]|nil, err: string|nil)
 function M.ollama_models(endpoint, cb)
 	return M.models_async("ollama", endpoint, function(models, err)
-		-- The old contract reported nil-plus-error rather than last-known-plus-error.
 		if err and (not models or #models == 0) then
 			return cb(nil, err)
 		end
@@ -1168,23 +878,6 @@ function M.opencode_models_async(cb)
 	return M.models_async("opencode", nil, cb)
 end
 
---=============================================================================
--- ACP session options and the write defence
---=============================================================================
-
----The guard for a provider, with config-supplied pieces resolved.
----
----A guard has two halves, and only the second is enforcement:
----
----  request   `required` (or a mode derived from the agent) plus `env`, pushed onto the session.
----            codecompanion's `acp_defaults.apply` is best-effort here: it warns and carries on
----            when the agent advertises no such category or rejects the value.
----  verify    the values are read back off the live session and the connection is refused if they
----            did not stick. `acp_pool` does this. It is the whole defence.
----
----`required` may be absent, in which case a mode is derived from what the agent advertises — see
----`M.derive_guard`. `unguarded = true` is how a user says they want an ACP inline connection with
----no write defence at all.
 ---@param provider string
 ---@return { required: table<string,string>|nil, env: table|nil, chat_env: table|nil, unguarded: boolean, derive: boolean }
 function M.effective_guard(provider)
@@ -1195,20 +888,14 @@ function M.effective_guard(provider)
 		env = guard.env,
 		chat_env = guard.chat_env,
 		unguarded = guard.unguarded == true,
-		-- Deriving is the default: a spec that names nothing still gets a defence if the agent
-		-- offers one, which is what keeps an unknown provider safe with no configuration.
 		derive = guard.derive ~= false,
 	}
 end
 
----Choose the most restrictive write-denying mode a live session actually offers.
----
----This is what lets a provider nobody has ever heard of be guarded anyway. The agent advertises
----its own modes through session config options; we pick from them rather than asking the user to
----know them. Returns nil when the agent offers no write-denying mode at all, which is the signal
----to withhold inline rather than to proceed.
+---Derive the most restrictive write-denying mode the live session offers. Returns nil when no
+-- safe mode exists, signalling that inline should be withheld.
 ---@param provider string
----@param conn table A connected, session-established ACP connection
+---@param conn table
 ---@return table<string,string>|nil required, string|nil why
 function M.derive_guard(provider, conn)
 	local guard = M.effective_guard(provider)
@@ -1253,25 +940,12 @@ function M.derive_guard(provider, conn)
 		("the agent offers no write-denying mode (it offers %s)"):format(table.concat(vim.tbl_keys(offered), ", "))
 end
 
----Session options that are a safety requirement rather than a preference.
----
----Separate from the rest because these have to be *verified* on the live session, not merely
----requested. Since the mode is the whole write defence — neither shipped agent uses the
----client-mediated `fs/*` path, so the pool's write guard covers nothing in practice — a connection
----that did not take it must not be used.
----
----Returns only what the spec names. A provider that names nothing gets its requirement derived
----from the live agent at connection time instead, which is why this being empty is no longer the
----same as "no defence".
 ---@param provider string
 ---@return table<string, string>
 function M.required_session_options(provider)
 	return vim.deepcopy(M.effective_guard(provider).required or {})
 end
 
----Resolve a stored option value for a live session, substituting the AUTO sentinel with a
----real model so it never reaches an agent as a literal value — agents don't recognize "auto"
----and silently fall back to their own ambient default instead of erroring.
 ---@param provider string
 ---@param key string
 ---@param value string|nil
@@ -1409,9 +1083,7 @@ function M.guard_env(provider, scope)
 	return out
 end
 
---=============================================================================
--- Pre-registry permission tables, kept for anything that read them directly
---=============================================================================
+-- Pre-registry permission tables kept for direct readers.
 
 ---@deprecated Read `M.effective_guard("opencode").env` instead.
 M.opencode_permission = M.providers.opencode.guard.env.OPENCODE_PERMISSION

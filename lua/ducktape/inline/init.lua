@@ -1,9 +1,6 @@
--- Inline editing: prompt, placement, anchoring, diff, accept/reject, concurrency, cancellation.
+-- Inline editing: request, diff, accept/reject, concurrency, cancellation.
 --
--- The contract is that nvim decides placement and the model only supplies code. A visual
--- selection is replaced exactly; with no selection the reply is inserted at the cursor. The
--- model never says where its output goes, so it cannot route an edit into a chat, a new buffer,
--- or anywhere outside the range the user picked.
+-- The model only supplies code; nvim decides placement.
 
 local api = vim.api
 
@@ -12,8 +9,8 @@ local parse = require("ducktape.inline.parse")
 local providers = require("ducktape.providers")
 local ui = require("ducktape.ui")
 
--- Messages here name keys, so they read them from the same table that binds them. Resolved per
--- call rather than once, so a message is right even if the keymaps were reconfigured after load.
+-- Messages name keys, so they read from the same table that binds them. Resolved per call so a
+-- remapped keymap is still described correctly.
 ---@param action string
 ---@return string
 local function K(action)
@@ -22,8 +19,7 @@ end
 
 local M = {}
 
--- Anchors and reject-time region marks. Separate from ducktape.ui's namespace so clearing progress
--- text can never disturb an anchor.
+-- Separate from ducktape.ui's namespace so clearing progress text cannot disturb an anchor.
 local ANCHOR = api.nvim_create_namespace("ducktape_inline_anchor")
 local seq = 0
 
@@ -43,42 +39,26 @@ local function count(tbl)
 	return n
 end
 
---=============================================================================
--- Range capture and anchoring
---=============================================================================
-
 ---@return { s0: number, e0: number, has_selection: boolean }
 local function capture_range()
 	local mode = vim.fn.mode()
 	if mode == "v" or mode == "V" or mode == "\22" then
-		-- Leave visual first so the '< and '> marks are set
+		-- Leave visual first so the '< and '> marks are set.
 		vim.cmd("normal! \27")
 		return { s0 = vim.fn.line("'<") - 1, e0 = vim.fn.line("'>"), has_selection = true }
 	end
 
-	-- No visual selection: the cursor's own line, treated exactly as if it had been selected.
-	--
-	-- An empty range — insert here, replace nothing — looks like the more conservative default and
-	-- is not. Asking for an edit while sitting on a line is asking about *that line*, and answering
-	-- with an insertion above it leaves the original still there, next to a modified copy of
-	-- itself, for the user to clean up by hand. M.submit still accepts an empty range for callers
-	-- that genuinely mean to insert.
+	-- With no selection the cursor's own line is treated as selected. An empty range would leave
+	-- the original line next to the inserted answer; M.submit still accepts an empty range for
+	-- callers that genuinely mean to insert.
 	local row = api.nvim_win_get_cursor(0)[1] - 1
 	return { s0 = row, e0 = row + 1, has_selection = true }
 end
 
----A row that nvim_buf_set_extmark will accept, the column to use on it, and whether the row had
----to be moved to get there.
----
+---A row and column nvim_buf_set_extmark will accept, plus whether the row had to be moved.
 ---An exclusive end row equal to the line count has no line to sit on, so it becomes the end of
----the last line instead. `resolve` needs to tell that apart from a mark that genuinely sits at
----the start of the last line, or a selection running to the end of the buffer silently loses its
----final line and the reply's own last line is appended as a duplicate.
----
----The third return value is what carries that, rather than the column: reading the column back
----cannot distinguish the two cases when the last line is **empty**, because then the end of the
----line and the start of it are the same position. A buffer ending in a blank line is ordinary,
----and so is a buffer that is nothing but one.
+---the last line. The boolean distinguishes that from a mark genuinely at the start of the last
+---line, which a column alone cannot do when that line is empty.
 ---@param bufnr number
 ---@param row number
 ---@return number row, number col, boolean clamped
@@ -91,19 +71,9 @@ local function clamp(bufnr, row)
 	return last, #(api.nvim_buf_get_lines(bufnr, last, last + 1, false)[1] or ""), true
 end
 
----Anchor a range with extmarks so edits elsewhere — including another inline accept — shift it
----correctly. The built-in snapshots whole-buffer line numbers instead, which is exactly why two
----of its requests corrupt each other.
----
----The gravities point inwards, both of them, which is what keeps the pair spanning the lines the
----user picked and nothing else. They are the opposite of the diff marks in show_diff, and for the
----opposite reason: those have to grow to cover the text the diff inserts into them, whereas these
----have to refuse to.
----
----Measured, because the outward-facing pair looks harmless and is not: a mark at (1,0) with left
----gravity moves to (0,0) when the line above it is replaced, and one at (4,0) with right gravity
----moves to (5,0) when the line below it is. Either way the range quietly grows over a line the
----user edited while the request was in flight, and the reply then overwrites that edit.
+---Anchor a range with extmarks so edits elsewhere shift it correctly.
+---Both gravities point inwards: the pair must refuse to grow over neighbouring edits. Outward
+---gravities were measured to creep onto adjacent lines when those lines were replaced.
 ---@param bufnr number
 ---@param range table
 ---@return table anchor
@@ -117,9 +87,8 @@ local function anchor(bufnr, range)
 		finish = api.nvim_buf_set_extmark(bufnr, ANCHOR, erow, ecol, { right_gravity = false }),
 	}
 
-	-- A separate mark whose only job is to disappear if the whole range is deleted. Collapsing
-	-- start onto finish is not a reliable test on its own: a user who deletes the range and
-	-- types a replacement leaves the pair spanning unrelated text.
+	-- Disappear if the whole range is deleted. Collapsing start onto finish is not enough: a
+	-- user who deletes the range and types a replacement leaves the pair spanning unrelated text.
 	if range.e0 > range.s0 then
 		marks.guard = api.nvim_buf_set_extmark(bufnr, ANCHOR, srow, scol, {
 			end_row = erow,
@@ -150,8 +119,7 @@ local function resolve(bufnr, marks)
 	if not s or #s == 0 or not e or #e == 0 then
 		return nil
 	end
-	-- The mark could not be placed on its own row, so it sits on the last line and that line is
-	-- part of the region: line-wise, the exclusive end is the row after it.
+	-- The mark was clamped to the last line; line-wise, the exclusive end is the row after it.
 	local e0 = marks.ends_at_eof and (e[1] + 1) or e[1]
 	return s[1], math.max(s[1], e0)
 end
@@ -161,16 +129,12 @@ local function drop_marks(bufnr, marks)
 		return
 	end
 	for _, id in pairs(marks) do
-		-- marks carries the ends_at_eof flag alongside the ids
+		-- `marks` also carries the `ends_at_eof` flag.
 		if type(id) == "number" then
 			pcall(api.nvim_buf_del_extmark, bufnr, ANCHOR, id)
 		end
 	end
 end
-
---=============================================================================
--- One edit per region
---=============================================================================
 
 ---A line range as the user counts them.
 ---@param s0 number
@@ -184,17 +148,12 @@ local function span(s0, e0)
 end
 
 ---The request or diff already holding any of these lines.
----
----Two inline edits over the same lines cannot both be right. Both prompts are built from the
----same text, so whichever answer lands second describes a rewrite of code the other one has
----already replaced — and applying it means writing over the first answer with lines that were
----never meant to sit next to it.
 ---@param bufnr number
 ---@param range { s0: number, e0: number }
 ---@return { kind: "request"|"diff", s0: number, e0: number, instruction: string|nil }|nil
 local function held_by(bufnr, range)
-	-- An insertion point occupies no lines, but it does sit on one, and an edit that replaces
-	-- that line takes the seam with it — so it is treated as covering the row it is on.
+	-- An insertion point covers the row it sits on, because a replacement that takes that line
+	-- takes the seam with it.
 	local lo, hi = range.s0, math.max(range.e0, range.s0 + 1)
 	local st = buf_state(bufnr)
 	local held
@@ -204,7 +163,7 @@ local function held_by(bufnr, range)
 		if not s0 or lo >= math.max(e0, s0 + 1) or s0 >= hi then
 			return
 		end
-		-- The oldest, so the answer does not depend on hash order when two things overlap.
+		-- Prefer the oldest, so the answer does not depend on hash order when two overlap.
 		if not held or order < held.order then
 			held = { kind = kind, order = order, s0 = s0, e0 = e0, instruction = item.instruction }
 		end
@@ -219,8 +178,6 @@ local function held_by(bufnr, range)
 	return held
 end
 
----Whether a new request over this range has to be refused, saying why and which key settles the
----thing in the way.
 ---@param bufnr number
 ---@param range { s0: number, e0: number }
 ---@return boolean
@@ -249,15 +206,7 @@ local function blocked(bufnr, range)
 	return true
 end
 
---=============================================================================
--- Prompt
---=============================================================================
-
--- The contract the model is held to, and the single biggest lever on what comes back — so it lives
--- in config rather than here. `opts.inline.prompt` carries the shipped text and its reasoning.
---
--- `INSERT` is only reachable through M.submit: the keymaps send the cursor's line as the selection,
--- so there is no empty range to describe unless a caller asks for one.
+-- The prompt contract lives in config; it is the biggest lever on what comes back.
 ---@return table
 local function prompts()
 	return require("ducktape.config").get().inline.prompt
@@ -331,27 +280,13 @@ local function build_prompt(bufnr, range, instruction, deep)
 		instruction = instruction_block,
 		content = content_block,
 		prompt = instruction_block .. "\n\n" .. content_block .. "\n",
-		-- Kept for the parser: a reply that reuses lines of the selection is an edit, however
-		-- little it looks like code on its own.
 		selection = selection,
 	}
 end
 
---=============================================================================
--- Diff keymaps
---=============================================================================
-
----Where a diff's replacement currently sits: the start mark for the row it begins on, and the
----reply's own line count for how far it reaches.
----
----Deliberately not `resolve`, because a diff's end mark cannot be trusted. DiffUI renders a
----deletion as real lines and takes them out again in `clear()`, and a right-gravity mark grows
----over them without ever shrinking back; a neighbouring diff landing on the row after this one
----pushes it as well. Measured: three one-line diffs on rows 0, 1 and 3 resolved to 0..2, 1..2 and
----3..5 when each owned exactly one row — which is how rejecting them all ate a line.
----
----The start mark has none of that trouble. It faces left at the top of the region, so only whole
----rows moving above it shift it, and those shift its content with it.
+---Where a diff's replacement currently sits.
+---Use the start mark, not `resolve`: a diff's end mark grows over DiffUI deletion rows and
+---never shrinks back, so the reply's own line count is the only reliable measure.
 ---@param diff table
 ---@return number|nil s0, number|nil e0
 local function diff_region(diff)
@@ -383,20 +318,18 @@ local function diff_under_cursor(bufnr)
 		end
 		only = only == nil and d or false
 	end
-	-- Outside every diff, but if only one is pending the intent is unambiguous
+	-- Outside every diff, but if only one is pending the intent is unambiguous.
 	return only or nil
 end
 
 local function bind_diff_keys(bufnr)
 	local shared = require("codecompanion.config").interactions.shared.keymaps
 
-	-- DiffUI binds these two buffer-locally even when skipping default keymaps, shadowing the
-	-- core paragraph motions while a diff is pending — and the second concurrent diff clobbers
-	-- the first's. Ours dispatch by cursor position instead.
+	-- DiffUI binds these buffer-locally and dispatches by diff_ui.winnr, so concurrent diffs
+	-- clobber each other's {/} maps. Delete them and dispatch by cursor position instead.
 	pcall(vim.keymap.del, "n", shared.next_hunk.modes.n, { buffer = bufnr })
 	pcall(vim.keymap.del, "n", shared.previous_hunk.modes.n, { buffer = bufnr })
-	-- Delete the literal keys too, in case upstream changes the shared-keymap structure and the
-	-- reads above silently find nothing. These are the stock defaults; harmless if not bound.
+	-- Literal fallbacks in case the shared-keymap structure changes upstream.
 	pcall(vim.keymap.del, "n", "}", { buffer = bufnr })
 	pcall(vim.keymap.del, "n", "{", { buffer = bufnr })
 
@@ -419,8 +352,8 @@ local function bind_diff_keys(bufnr)
 	end, keys.desc("diff_prev_hunk"))
 end
 
--- Defined further down, where `guarded` is in scope, but called from the registry bookkeeping above
--- it: the lock comes off as soon as the last request in a buffer lets go of its lines.
+-- Defined before `guarded` but called from registry code below it; the lock is released once
+-- the last guarded request in a buffer lets go.
 local unlock_undo
 
 local function unbind_diff_keys(bufnr)
@@ -429,10 +362,6 @@ local function unbind_diff_keys(bufnr)
 		pcall(vim.keymap.del, "n", keys.lhs(action), { buffer = bufnr })
 	end
 end
-
---=============================================================================
--- Registry bookkeeping
---=============================================================================
 
 local function forget_request(req)
 	local st = buf_state(req.bufnr)
@@ -443,8 +372,6 @@ local function forget_request(req)
 	unlock_undo(req.bufnr)
 end
 
----Stop one request and forget everything it was holding: the transport's job, the spinner and
----the anchor it would have applied its answer to.
 ---@param req table
 local function cancel_request(req)
 	if req.handle then
@@ -454,9 +381,7 @@ local function cancel_request(req)
 	drop_marks(req.bufnr, req.marks)
 end
 
--- Declared here because watch_buffer has to clear waiting replies when a buffer goes, and it is
--- defined before them — they in turn need watch_buffer, so one of the two has to be forward
--- declared.
+-- Forward declaration: watch_buffer clears waiting replies, and the helpers below need it.
 ---@type fun(entry: table)
 local forget_waiting
 
@@ -468,8 +393,7 @@ local function forget_diff(diff, keep_marks)
 	if not keep_marks then
 		drop_marks(diff.bufnr, diff.marks)
 	end
-	-- resolve_diff clears every shared keymap in the buffer, including the g2/g3 we own, so a
-	-- second pending diff would silently lose its bindings.
+	-- resolve_diff clears every shared keymap in the buffer, so rebind any remaining diffs.
 	vim.schedule(function()
 		if not api.nvim_buf_is_valid(diff.bufnr) then
 			return
@@ -482,26 +406,10 @@ local function forget_diff(diff, keep_marks)
 	end)
 end
 
---=============================================================================
--- Protecting a range while its request is in flight
---=============================================================================
-
--- The prompt is built from the exact lines of the range and the answer is applied back over
--- them, so an edit landing on one in the meantime means a reply that rewrites text the user has
--- since changed — silently discarding whatever they typed the moment they accept it. Editing
--- anywhere else in the buffer is untouched.
---
--- The guard tracks its own rows arithmetically, from the geometry `on_bytes` reports, rather than
--- reading them back off an extmark. No single mark configuration can do this job: measured on a
--- --clean nvim, a left-gravity mark at the top of the range is dragged *up* when the line above it
--- is replaced, and a right-gravity one is pushed *past* the replacement when its own line is — and
--- a one-line range is entirely its own first line, so the second case is every edit to it. That
--- was reverting a one-line range's edit one row too low, leaving the typed text in place with the
--- original inserted underneath it. Arithmetic has no such ambiguity: `guard_row` is where the
--- lines start and `guard_span` is how many rows they now occupy.
---
--- Only a real selection is protected. An insertion point holds no lines to put back, and its
--- anchor rides along with the edits around it, so its answer still lands where it was asked for.
+-- The prompt and answer both refer to the exact range lines, so an edit landing there while
+-- the request is in flight means a reply that silently discards whatever the user typed. The
+-- guard tracks rows arithmetically from on_bytes, because no extmark configuration survives
+-- edits to a one-line range: left gravity drags up, right gravity pushes past.
 
 ---@param bufnr number
 ---@return table[]
@@ -526,12 +434,9 @@ local function guard_at(bufnr, row)
 	end
 end
 
----Say something about a guarded range, late enough to be read.
----
----From a timer, not from the caller and not from `vim.schedule`: these messages all come out around
----a mode change, and the redraw that ends one wipes the command line. Scheduled callbacks run
----*before* that redraw — measured, along with the consequence: the warning was reaching `:messages`
----and never the screen, which is exactly as good as saying nothing. A timer runs after it.
+---Say something about a guarded range late enough to be read.
+---Scheduled from a timer, not `vim.schedule`: these messages arrive around a mode change, and
+-- the redraw that ends one wipes the command line before a scheduled callback runs.
 ---@param msg string
 ---@param opts? { history?: boolean }
 local function announce(msg, opts)
@@ -540,9 +445,8 @@ local function announce(msg, opts)
 	end, 10)
 end
 
--- What the user tried, and what to say about it. The instruction is not named in any of them: it
--- would be the first thing cut when the message is fitted to the command line, and the range's own
--- label is directly above the lines in question — the key to press is what is nowhere else.
+-- What the user tried, and what to say about it. The instruction is omitted: the range label
+-- is already visible, and the key to press is the only thing not shown elsewhere.
 local HELD = {
 	refused = function()
 		return "[ducktape] those lines are held by an inline request — " .. K("cancel") .. " cancels it"
@@ -556,11 +460,9 @@ local HELD = {
 }
 
 ---@param req table
----@param why? "refused"|"reverted"|"undo" Defaults to refused, the do-nothing-yet case
+---@param why? "refused"|"reverted"|"undo" Defaults to refused
 local function say_protected(req, why)
-	-- Always shown, recorded at most once every 2s. The backstop can fire once per keystroke and a
-	-- stream of identical entries would bury the history, but suppressing the *echo* means a second
-	-- attempt says nothing at all — and each attempt has wiped the command line on its way in.
+	-- Echo every attempt, but record to history at most once every 2s.
 	local now = vim.uv.now()
 	local record = req.warned == nil or now - req.warned >= 2000
 	if record then
@@ -569,28 +471,18 @@ local function say_protected(req, why)
 	announce(HELD[why or "refused"](), { history = record })
 end
 
--- Undo and redo, and the two ways of walking the tree by hand.
 local UNDO_KEYS = { "u", "U", "<C-r>", "g-", "g+" }
 
--- Compared as keycodes, not as strings: nvim_buf_get_keymap reports `<C-R>`, so a mapping already on
--- redo would not match the `<C-r>` written above and would be replaced without being handed back.
+-- Compared as keycodes: nvim_buf_get_keymap reports `<C-R>`, so `<C-r>` would not match.
 local UNDO_CODES = {}
 for _, lhs in ipairs(UNDO_KEYS) do
 	UNDO_CODES[vim.keycode(lhs)] = true
 end
 
 ---Hold undo off while a request is working on lines in this buffer.
----
----Undo is the one edit the guard cannot answer well. Reverting a change *to* the held lines is fine
----— their former text is known — but undo walks back through changes that were made before the
----request existed, and a single step of that can take the whole run of lines with it. That is the
----case the guard has to cancel the request for, since it knows what the lines said but not where
----they would now belong. Measured: two `u` presses with a request in flight cancelled it.
----
----So the keys are refused for as long as lines are held, which is seconds, and `<leader>cx` is the
----way out. Any buffer-local mapping already on those keys is put back afterwards, so a plugin that
----owns `u` in this buffer does not silently lose it. `:undo` and `:earlier` are not keys and are not
----covered — the guard remains the backstop there, cancelling as it did before.
+---Undo can walk back through changes made before the request existed, taking the whole run
+---with it; the guard cancels the request in that case. Any buffer-local mapping already on
+---those keys is restored afterwards.
 ---@param bufnr number
 local function lock_undo(bufnr)
 	local st = buf_state(bufnr)
@@ -633,7 +525,7 @@ function unlock_undo(bufnr)
 	end
 end
 
----Put a protected range back the way its request left it, at the row the guard has been tracking.
+---Put a protected range back the way its request left it.
 ---@param bufnr number
 ---@param req table
 local function restore_guard(bufnr, req)
@@ -641,16 +533,13 @@ local function restore_guard(bufnr, req)
 	local total = api.nvim_buf_line_count(bufnr)
 	local at = math.max(math.min(req.guard_row, total), 0)
 	st.restoring = true
-	-- Joined onto the edit it undoes, so the pair is one undo step: left as two, a `u` would put
-	-- the blocked edit back and the guard would immediately revert it again. Refused right after
-	-- an undo, which is why it is a pcall and not a hard requirement.
+	-- Joined onto the edit it undoes so the pair is one undo step; refused right after an undo.
 	pcall(vim.cmd, "undojoin")
 	pcall(api.nvim_buf_set_lines, bufnr, at, math.min(at + req.guard_span, total), false, req.guard)
 	st.restoring = false
 
 	req.guard_row, req.guard_span = at, #req.guard
-	-- Re-anchored from the row the guard knows: the same edit that mangled the lines mangled the
-	-- anchor marks, and a range that resolves to nothing would have its answer dropped on arrival.
+	-- The same edit mangled the anchor marks, so re-anchor from the row the guard knows.
 	drop_marks(bufnr, req.marks)
 	req.marks = anchor(bufnr, { s0 = at, e0 = at + #req.guard })
 
@@ -660,11 +549,8 @@ local function restore_guard(bufnr, req)
 	end
 end
 
----Apply one reported change to every guarded range in the buffer: move the ones it happened above,
----and mark the ones it happened *inside*.
----
----Pure arithmetic, because this runs inside `on_bytes`, which holds textlock — nothing here may
----read or write the buffer.
+---Apply one reported change to every guarded range.
+---Pure arithmetic, because this runs inside on_bytes, which holds textlock.
 ---@param bufnr number
 ---@param sr number Row the change starts on
 ---@param sc number Column it starts at
@@ -674,17 +560,15 @@ end
 local function track_change(bufnr, sr, sc, old_rows, old_cols, new_rows)
 	local delta = new_rows - old_rows
 
-	-- Which existing rows this change rewrote. A change that replaced nothing (both old offsets
-	-- zero) only inserted: at a column of zero it sits between two lines and rewrites neither, and
-	-- past column zero it splits the line it is on, which does count as rewriting it.
+	-- Which existing rows this change rewrote. A pure insertion (old offsets zero) only rewrites
+	-- a row when it is past column zero on that row; otherwise it sits between two lines.
 	local from, to
 	if old_rows == 0 and old_cols == 0 then
 		if sc > 0 then
 			from, to = sr, sr
 		end
 	else
-		-- An end column of zero means the change stopped at the start of that row, so the row
-		-- itself contributed nothing to it.
+		-- An end column of zero means the change stopped at the start of that row.
 		to = sr + old_rows - (old_cols == 0 and 1 or 0)
 		from, to = sr, math.max(to, sr)
 	end
@@ -692,8 +576,7 @@ local function track_change(bufnr, sr, sc, old_rows, old_cols, new_rows)
 	for _, req in ipairs(guarded(bufnr)) do
 		local g, span = req.guard_row, req.guard_span
 		if not from then
-			-- An insertion between lines: at or above the range it pushes the whole thing down;
-			-- strictly inside it, it has broken the run of lines the model was given.
+			-- Insertion between lines.
 			if sr <= g then
 				req.guard_row = g + delta
 			elseif sr < g + span then
@@ -707,9 +590,7 @@ local function track_change(bufnr, sr, sc, old_rows, old_cols, new_rows)
 				req.violated = true
 				req.guard_span = span + delta
 			else
-				-- The change reached outside the range as well. Only the range's own former text is
-				-- known, so putting it back would mean guessing at the rest — the request is stopped
-				-- instead, which is honest and leaves the user's change alone.
+				-- The change reached outside the range; only the range's own former text is known.
 				req.swept = true
 			end
 		end
@@ -725,8 +606,7 @@ local function enforce_guards(bufnr)
 		if req.swept then
 			req.swept = false
 			cancel_request(req)
-			-- Named here, unlike the messages above: the request is gone and its label with it, so
-			-- this is the last place its instruction appears at all.
+			-- Last chance to name the instruction, since the request is gone.
 			announce(
 				("[ducktape] your change spanned an inline request's lines — cancelled it (%s)"):format(
 					ui.ellipsise(req.instruction or "?", 20)
@@ -734,9 +614,7 @@ local function enforce_guards(bufnr)
 			)
 		elseif req.violated then
 			req.violated = false
-			-- Verified before writing: a change and its own undo can both land in one tick, and
-			-- rewriting lines that already say the right thing would cost the user an undo step and
-			-- a warning for nothing.
+			-- Avoid rewriting lines that already match, which would cost an undo step and a warning.
 			local now = api.nvim_buf_get_lines(bufnr, req.guard_row, req.guard_row + req.guard_span, false)
 			if not vim.deep_equal(now, req.guard) then
 				restore_guard(bufnr, req)
@@ -747,9 +625,8 @@ local function enforce_guards(bufnr)
 	end
 end
 
----Watch a buffer's text so an edit on a protected range can be put straight back. Attached with
----the first guarded request and detached with the last, so a buffer with nothing in flight in it
----pays nothing.
+---Watch a buffer's text so an edit on a protected range can be reverted. Attached with the
+---first guarded request and detached with the last.
 ---@param bufnr number
 local function watch_text(bufnr)
 	local st = buf_state(bufnr)
@@ -769,9 +646,7 @@ local function watch_text(bufnr)
 			if s.restoring then
 				return
 			end
-			-- Every change is tracked, so the rows stay exact; only the reverting is deferred, since
-			-- on_bytes holds textlock and the buffer cannot be written from here. One pass per tick
-			-- however many changes arrive, so a paste is one restore rather than one per line.
+			-- Track immediately, but defer the revert because on_bytes holds textlock.
 			track_change(b, sr, sc, old_rows, old_cols, new_rows)
 			if s.pending then
 				return
@@ -788,23 +663,12 @@ local function watch_text(bufnr)
 	})
 end
 
--- Rejected diffs whose original lines are due back, and whether a flush is already booked.
 local restores, flush_booked = {}, false
 
----Put a rejected diff's original lines back, once every rejection in this tick has been seen.
----
----Batched rather than restored on the spot, because rejecting two diffs in one buffer at once
----otherwise loses a line between them. show_diff's marks face outwards so they can grow over the
----text the diff inserts into them, and that also means a write on the row one of them sits on
----drags it: restore the lower region and the upper diff's end mark is pushed a row down, so its
----own restore then overwrites the line just put back. Measured on adjacent regions — and it
----depends on which one goes first, so it corrupted only sometimes.
----
----The flush measures every queued region before writing any of them, so no region is read after
----another has moved it, and applies them bottom-up, so a write can never shift a region still to
----come. Measuring is deliberately left to the flush rather than done at rejection time: DiffUI
----deletes its spacer line in `clear()`, which runs after this callback, and rows taken before that
----would be one out.
+---Put rejected diffs' original lines back once every rejection in this tick has been seen.
+---Batched and bottom-up: DiffUI deletes a spacer line in clear() after this callback, so
+---measuring before that would be one row out; writing bottom-up prevents one restore from
+---shifting another's region.
 ---@param diff table
 local function queue_restore(diff)
 	table.insert(restores, diff)
@@ -834,15 +698,11 @@ local function queue_restore(diff)
 		end)
 
 		for _, r in ipairs(regions) do
-			-- Checked against the reply before overwriting it. The region is derived rather than
-			-- read back from a mark, so this is what catches a derivation that has gone wrong — and
-			-- also the user having edited the diff themselves, where putting the original back would
-			-- throw away their work without asking. Leaving the reply in place is the safer failure:
-			-- it is visible, and g3 is still there once they are done.
+			-- Check against the reply before overwriting it. This catches a bad derivation or the
+			-- user having edited the diff themselves; leaving the reply is the safer failure.
 			local now = api.nvim_buf_get_lines(r.bufnr, r.s0, r.e0, false)
 			if vim.deep_equal(now, r.diff.replacement) then
-				-- Only this diff's own region, never the whole buffer: a whole-buffer restore is
-				-- what makes the built-in corrupt a second concurrent request.
+				-- Only this diff's own region; a whole-buffer restore corrupts concurrent requests.
 				pcall(api.nvim_buf_set_lines, r.bufnr, r.s0, r.e0, false, r.diff.original)
 			else
 				ui.say(
@@ -857,8 +717,6 @@ local function queue_restore(diff)
 	end)
 end
 
----Auto-reject on premature close is disabled under skip_default_keymaps, so restoring the
----original lines is ours to do.
 ---@param bufnr number
 local function watch_buffer(bufnr)
 	local st = buf_state(bufnr)
@@ -867,18 +725,14 @@ local function watch_buffer(bufnr)
 	end
 	st.augroup = api.nvim_create_augroup("DucktapeInlineBuf" .. bufnr, { clear = true })
 
-	-- Refusing insert mode outright is both cheaper and less startling than letting the text
-	-- change and putting it back — nothing has been typed yet at this point. The guard above is
-	-- still the backstop, for the operators that change text without ever entering insert.
+	-- Refusing insert mode outright is cheaper and less startling than typing and reverting.
 	api.nvim_create_autocmd("InsertEnter", {
 		group = st.augroup,
 		buffer = bufnr,
 		callback = function()
 			local req = guard_at(bufnr, api.nvim_win_get_cursor(0)[1] - 1)
 			if req then
-				-- Scheduled, because `stopinsert` called from inside InsertEnter does nothing at all:
-				-- measured, mode was still "i" 250ms later. This was the whole refusal, so insert mode
-				-- was in fact being entered on held lines and only the backstop was stopping the typing.
+				-- stopinsert from inside InsertEnter does nothing; schedule it.
 				vim.schedule(function()
 					vim.cmd("stopinsert")
 				end)
@@ -888,7 +742,7 @@ local function watch_buffer(bufnr)
 	})
 
 	local function reject_pending()
-		-- Snapshot first: rejecting mutates st.diffs while we walk it
+		-- Snapshot first: rejecting mutates st.diffs while we walk it.
 		for _, diff in ipairs(vim.tbl_values(st.diffs)) do
 			M.reject(bufnr, diff)
 		end
@@ -898,12 +752,8 @@ local function watch_buffer(bufnr)
 		group = st.augroup,
 		buffer = bufnr,
 		callback = function(args)
-			-- WinClosed's pattern is a window id, so `buffer =` scopes this to "a window showing
-			-- this buffer closed" — not "the buffer went away". Without the count below, closing
-			-- one split of two throws away a finished edit the user had not accepted yet.
-			-- WinClosed fires before the window is gone, so the closing one still counts.
-			-- Deferred: a fast split/close cycle can fire WinClosed before the new window for the
-			-- same buffer exists, so checking immediately would count zero and reject.
+			-- WinClosed means "a window showing this buffer closed", not "the buffer went away".
+			-- Check after a tick: a fast split/close cycle can fire before the new window exists.
 			local closing = tonumber(args.match)
 			vim.defer_fn(function()
 				for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
@@ -921,56 +771,34 @@ local function watch_buffer(bufnr)
 		buffer = bufnr,
 		callback = function()
 			reject_pending()
-			-- A reply waiting on a buffer that has gone has nothing left to point at, and its retry
-			-- would have nowhere to land.
+			-- A reply waiting on a gone buffer has nowhere to land.
 			for _, entry in ipairs(vim.tbl_values(st.waiting)) do
 				forget_waiting(entry)
 			end
-			-- A request whose buffer is gone has nowhere to land, and on_reply would discard it
-			-- anyway — so stop paying for it rather than letting the agent finish into a void.
+			-- A request whose buffer is gone is paying to finish into a void.
 			for _, req in ipairs(vim.tbl_values(st.requests)) do
 				cancel_request(req)
 			end
-			-- Neither the registry entry nor the augroup is reachable again once the buffer is
-			-- wiped, and both would otherwise accumulate for the rest of the session.
+			-- Both the registry entry and augroup would otherwise accumulate for the session.
 			pcall(api.nvim_del_augroup_by_id, st.augroup)
 			buffers[bufnr] = nil
 		end,
 	})
 end
 
---=============================================================================
--- Applying a reply
---=============================================================================
-
---=============================================================================
--- Replies that cannot be applied
---=============================================================================
-
--- A reply that is not code — an answer, a refusal, leaked tool markup — and a request that failed
--- outright both leave something the user has to decide about, and neither can be written into the
--- buffer. They used to be thrown straight at the screen: prose opened a float that took focus, and
--- an error was a notify and nothing else.
---
--- Both are registered instead, so they behave like a pending diff: they wait, they are visible
--- where they belong, they show up in the list wherever the user is, and they can be read, taken
--- into a chat, re-asked or dismissed at whatever moment suits. Nothing takes focus, and nothing is
--- lost by looking away — which the float was, since dismissing it destroyed the only copy.
+-- Prose and outright failures are registered like pending diffs instead of thrown at the screen.
+-- They stay visible where they belong, can be read or re-asked, and nothing takes focus.
 
 local WAITING = {
 	prose = { sign = "◆", hl = "DucktapeListReady", label = "answered" },
 	failed = { sign = "✖", hl = "DucktapeListDead", label = "failed" },
 }
 
----Where a waiting reply's lines are, or nothing if it never had any or they have gone.
----
----A function rather than `entry.marks and resolve(...)` at each call site: that idiom truncates a
----two-value return to one, so the end row came back nil everywhere it was written that way.
+---Where a waiting reply's lines are.
 ---@param entry table
 ---@return number|nil s0, number|nil e0
 local function waiting_region(entry)
 	if not entry.marks then
-		-- Both, so a caller destructuring two values gets two.
 		return nil, nil
 	end
 	return resolve(entry.bufnr, entry.marks)
@@ -1001,18 +829,13 @@ local function wait_on_user(req, kind, opts)
 	seq = seq + 1
 	local entry = {
 		id = seq,
-		-- Keeps the row where the request was, so a reply arriving changes its state in place.
 		request_id = req.id,
 		kind = kind,
 		bufnr = bufnr,
-		-- Re-anchored rather than reusing the request's marks: those are dropped as each request
-		-- ends, and this outlives it.
+		-- Re-anchored: the request's marks are dropped as each request ends, and this outlives it.
 		marks = s0 and anchor(bufnr, { s0 = s0, e0 = e0 }) or nil,
 		title = opts.title,
 		text = opts.text,
-		-- Everything a retry needs. The provider is recorded for the row rather than for the resend:
-		-- re-asking goes out with whatever is selected now, since a refusal is a common reason to
-		-- switch model first.
 		instruction = req.instruction,
 		deep = req.deep,
 		provider = req.provider,
@@ -1036,14 +859,8 @@ local function wait_on_user(req, kind, opts)
 	return entry
 end
 
---=============================================================================
--- Holding the cursor still
---=============================================================================
-
--- DiffUI scrolls to the first hunk when it renders (diff/ui.lua:603 → scroll_to_line, which is a
--- `:LINE` plus `normal! zz` inside the window showing the buffer). A request runs for seconds and
--- lands whenever it lands, so that is a cursor yanked away from whatever was being typed, and the
--- view recentred under it. Both are put back.
+-- DiffUI scrolls to the first hunk when it renders, which yanks the cursor and recentres the
+-- view. Remember cursor position and scroll so both can be put back.
 
 ---Where the cursor is in every window on this buffer, and what those windows are looking at.
 ---@param bufnr number
@@ -1056,10 +873,7 @@ local function hold_view(bufnr)
 		table.insert(held, {
 			win = win,
 			view = view,
-			-- An extmark as well as the saved line number: the diff writes its own rows in, so the
-			-- line the cursor was on is not necessarily the line it should be on afterwards. Left
-			-- gravity, so text inserted at the cursor's own row appears below it rather than
-			-- carrying it along.
+			-- Left gravity, so text inserted at the cursor's own row appears below it.
 			mark = api.nvim_buf_set_extmark(bufnr, ANCHOR, math.min(view.lnum - 1, total - 1), 0, {
 				right_gravity = false,
 			}),
@@ -1076,8 +890,7 @@ local function release_view(bufnr, held)
 			local view = vim.deepcopy(h.view)
 			local m = api.nvim_buf_get_extmark_by_id(bufnr, ANCHOR, h.mark, {})
 			if m and #m > 0 then
-				-- The window is scrolled by however far the cursor's own line moved, so the line
-				-- stays where it was on screen rather than the view jumping to catch up with it.
+				-- Scroll by how far the cursor line moved, so it stays where it was on screen.
 				local shifted = (m[1] + 1) - h.view.lnum
 				view.lnum = m[1] + 1
 				view.topline = math.max(h.view.topline + shifted, 1)
@@ -1115,12 +928,9 @@ local function show_diff(req, result)
 
 	if vim.deep_equal(from_lines, to_lines) then
 		drop_marks(bufnr, req.marks)
-		-- A model that declines usually echoes the selection back inside a fence and explains
-		-- itself around it. Reporting only "nothing to change" would throw that explanation away
-		-- and leave the user staring at an unchanged buffer with no idea why.
+		-- A model that declines often echoes the selection back inside a fence. Surface the
+		-- explanation instead of discarding it.
 		if result.preamble then
-			-- result.preamble, not result.text: kind "code" has no text field, only the prose that
-			-- surrounded the fence.
 			wait_on_user(req, "prose", {
 				title = ("%s — returned the selection unchanged"):format(req.provider),
 				text = result.preamble,
@@ -1137,23 +947,17 @@ local function show_diff(req, result)
 		return ui.say("[ducktape] the reply matches the buffer — nothing to change", vim.log.levels.INFO)
 	end
 
-	-- An empty buffer never reaches the diff UI. DiffUI's own create_diff_display writes the
-	-- merged old-and-new view straight in when it finds the buffer empty (diff/ui.lua:439), and
-	-- apply_inline then applies its hunks on top of that — so the reply lands twice. There is
-	-- nothing to compare against in an empty buffer anyway, and `u` is a complete way back.
+	-- DiffUI writes the merged view straight into an empty buffer, so the reply would land twice.
 	if api.nvim_buf_line_count(bufnr) == 1 and (api.nvim_buf_get_lines(bufnr, 0, 1, true)[1] or "") == "" then
 		drop_marks(bufnr, req.marks)
 		api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 		return ui.say("[ducktape] the buffer was empty, so the reply was inserted directly — u to undo")
 	end
 
-	-- The diff UI takes over a window to show itself, and falls back to the *current* one when
-	-- the target buffer is not on screen (diff/ui.lua:426), which would yank whatever the user
-	-- moved on to read out from under them. Requests run for seconds, so moving on is normal.
+	-- DiffUI falls back to the current window when the target buffer is not on screen, which
+	-- would yank the user's new window out from under them.
 	if vim.fn.bufwinid(bufnr) == -1 then
 		local name = vim.fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t"):gsub("^$", "the target buffer")
-		-- Registered rather than discarded, so the instruction survives: bring the buffer back on
-		-- screen and `e` in the list asks the same thing again.
 		wait_on_user(req, "failed", {
 			title = ("%s — could not be applied"):format(req.provider),
 			text = ("%s answered, but %s was not on screen, so there was nowhere to render the diff without taking over the window you had moved to.\n\nBring the buffer back into view and press e in the inline list to ask again."):format(
@@ -1174,9 +978,8 @@ local function show_diff(req, result)
 
 	local original = vim.list_slice(from_lines, s0 + 1, e0)
 
-	-- Placed before show_diff and tracked through it: the change is confined to [start, finish),
-	-- start holds against insertion and finish is pushed past the replacement, so the pair spans
-	-- exactly the new content once the diff has been applied.
+	-- Marks span exactly the new content once the diff is applied: start holds against insertion
+	-- and finish is pushed past the replacement.
 	local srow, scol = clamp(bufnr, s0)
 	local erow, ecol, ends_at_eof = clamp(bufnr, e0)
 	local marks = {
@@ -1188,16 +991,13 @@ local function show_diff(req, result)
 	seq = seq + 1
 	local diff = {
 		id = seq,
-		-- The request this came out of, so M.list can keep the entry where it was when the
-		-- request it describes finishes: the row changes state in place rather than jumping to
-		-- the bottom of the list under a cursor that was reading it.
+		-- Keep the list entry where it was: the row changes state in place rather than jumping.
 		request_id = req.id,
 		bufnr = bufnr,
 		marks = marks,
 		original = original,
-		-- What the diff put there, which is how its extent is known later: the end mark grows over
-		-- DiffUI's own deletion rows and never shrinks back, so the reply's own length is the only
-		-- reliable measure of how far the region reaches. See diff_region.
+		-- What the diff put there. The end mark grows over DiffUI deletions, so this is the only
+		-- reliable measure of the region's extent.
 		replacement = lines,
 		provider = req.provider,
 		model = req.model,
@@ -1215,26 +1015,22 @@ local function show_diff(req, result)
 		diff_id = diff.id,
 		ft = vim.bo[bufnr].filetype,
 		inline = true,
-		-- The previous-hunk key is shown as a bare suffix ("<leader>cj/ck") because the banner sits
-		-- in a window bar with no room to spell both out. Parenthesised: gsub returns a count too,
-		-- and format would take it as a fifth argument.
+		-- Abbreviate <leader> in the banner; the window bar has no room to spell both out.
 		banner = ("%s Accept | %s Reject | %s/%s Hunk"):format(
 			K("diff_accept"),
 			K("diff_reject"),
 			K("diff_next_hunk"),
 			(K("diff_prev_hunk"):gsub("^<[lL]eader>", ""))
 		),
-		-- What lets us own g2/g3, which is what makes concurrent diffs possible at all
+		-- Own g2/g3 so concurrent diffs are possible.
 		skip_default_keymaps = true,
 		keymaps = {
 			on_accept = function()
 				forget_diff(diff)
 			end,
 			on_reject = function()
-				-- Deferred past resolve_diff's own cleanup. When a hunk starts at line 1, DiffUI
-				-- inserts a real spacer line at row 0 and deletes it again in clear(), which runs
-				-- after this handler — restoring first made that deletion land on a line of ours
-				-- and silently swallow it.
+				-- Defer past resolve_diff's cleanup. DiffUI inserts a spacer line for a hunk at row 0
+				-- and deletes it in clear(); restoring first swallowed one of our lines.
 				queue_restore(diff)
 				forget_diff(diff, true)
 			end,
@@ -1246,8 +1042,7 @@ local function show_diff(req, result)
 	watch_buffer(bufnr)
 	bind_diff_keys(bufnr)
 
-	-- After DiffUI's own scroll, which it schedules from inside show_diff — so this one, queued
-	-- once show_diff has returned, is the one that runs last.
+	-- Run after DiffUI's own scheduled scroll.
 	vim.schedule(function()
 		release_view(bufnr, held)
 	end)
@@ -1261,9 +1056,7 @@ local function on_reply(req, reply)
 		return
 	end
 
-	-- The filetype and the original selection are what keep the parser from mistaking a correct
-	-- reply for prose: in a Markdown buffer the right answer *is* a sentence, and a reply that
-	-- echoes lines of the selection is an edit whatever it looks like in isolation.
+	-- filetype and the original selection keep the parser from rejecting a correct reply.
 	local result = parse.parse(reply, { filetype = vim.bo[req.bufnr].filetype, selection = req.selection })
 
 	if result.kind == "code" then
@@ -1275,9 +1068,7 @@ local function on_reply(req, reply)
 		return ui.say(("[ducktape] %s"):format(result.reason), vim.log.levels.WARN)
 	end
 
-	-- Left for the user to come to, rather than opened over whatever they are doing. Requests run
-	-- for seconds and land whenever they land, and a float that took focus mid-keystroke was both
-	-- disruptive and the only copy of the reply.
+	-- Leave prose for the user to come to, rather than opening a float over whatever they are doing.
 	wait_on_user(req, "prose", {
 		title = ("%s — %s"):format(req.provider, result.reason),
 		text = result.text,
@@ -1289,12 +1080,7 @@ local function on_reply(req, reply)
 	)
 end
 
---=============================================================================
--- Public entry points
---=============================================================================
-
----Start one inline request. Separated from M.run so it can be driven without the input float,
----which is what the test suites drive.
+---Start one inline request. Separated from M.run so it can be driven without the input float.
 ---@param opts { bufnr: number, range: table, instruction: string, deep?: boolean, timeout?: number }
 ---@return table|nil req
 function M.submit(opts)
@@ -1306,8 +1092,7 @@ function M.submit(opts)
 	local selection = providers.current("inline")
 	local transport = providers.transport(selection.provider, opts.deep or false)
 
-	-- Repeated from M.run because this is a public entry point in its own right, and a deep
-	-- request on a transport that cannot read would otherwise silently run as a shallow one.
+	-- Public entry point: refuse deep if the transport cannot read, or it would silently run shallow.
 	if opts.deep and not providers.transports[transport].read then
 		ui.say(
 			(
@@ -1320,14 +1105,13 @@ function M.submit(opts)
 		return nil
 	end
 
-	-- Checked here as well as in M.run: the prompt float is open for as long as it takes to type
-	-- an instruction, and another request can be started over the same lines while it is.
+	-- Checked here as well as in M.run: another request can start over the same lines while the
+	-- prompt float is open.
 	if blocked(bufnr, opts.range) then
 		return nil
 	end
 
-	-- A waiting reply over these lines is superseded by asking again, so it does not hold the range
-	-- the way a request or a pending diff does — nothing of it is going to be applied.
+	-- A waiting reply is superseded by asking again; it does not hold the range.
 	local lo, hi = opts.range.s0, math.max(opts.range.e0, opts.range.s0 + 1)
 	for _, entry in ipairs(vim.tbl_values(buf_state(bufnr).waiting)) do
 		local ws, we = waiting_region(entry)
@@ -1344,24 +1128,19 @@ function M.submit(opts)
 		model = tostring(selection.opts.model),
 		transport = transport,
 		deep = opts.deep or false,
-		-- What was asked, kept for the list and for the chat hand-off in on_reply, which was
-		-- already reading this field before anything set it.
 		instruction = opts.instruction,
-		-- Loop time rather than os.time(): the list counts seconds, and os.time() only moves
-		-- once one has fully elapsed, so a request would sit on "0s" for up to a second.
+		-- uv.now() so the list counts seconds; os.time() would sit on "0s" for up to a second.
 		started = vim.uv.now(),
 		marks = anchor(bufnr, opts.range),
 	}
 
 	local built = build_prompt(bufnr, opts.range, opts.instruction, opts.deep or false)
 	req.selection = built.selection
-	-- The lines as the request saw them, so an edit that lands on top of them can be put back,
-	-- plus where they are and how many rows they currently occupy — see track_change.
+	-- The lines as the request saw them, so an edit landing on top can be put back.
 	if opts.range.e0 > opts.range.s0 then
 		req.guard = built.selection
 		req.guard_row, req.guard_span = opts.range.s0, #built.selection
 	end
-	-- Both values of resolve, so the spinner marks the whole range rather than just its first row.
 	req.progress = ui.progress(bufnr, function()
 		return resolve(bufnr, req.marks)
 	end, ("%s · %s · %s"):format(selection.provider, tostring(selection.opts.model), opts.instruction))
@@ -1370,10 +1149,8 @@ function M.submit(opts)
 		or transport == "relay" and "ducktape.inline.relay"
 		or "ducktape.inline.acp"
 
-	-- Registered before the send, not after. A transport can fail synchronously — no
-	-- `opencode` on PATH, an adapter that will not resolve — and its on_error runs inside
-	-- send(); registering afterwards would put an already-dead request into the buffer's registry
-	-- with nothing left to clear it, so `<leader>cx` would keep reporting a phantom in flight.
+	-- Register before sending. A transport can fail synchronously (no opencode on PATH, etc.);
+	-- registering afterwards would leave a dead request in the registry with no way to clear it.
 	buf_state(bufnr).requests[req.id] = req
 	watch_buffer(bufnr)
 	if req.guard then
@@ -1394,15 +1171,12 @@ function M.submit(opts)
 		end,
 		on_error = function(msg)
 			forget_request(req)
-			-- Kept rather than dropped, so the work put into the instruction is not lost with it:
-			-- the row stays in the list with the range still anchored, and `e` there re-asks.
+			-- Keep the row anchored so `e` in the list re-asks with the same instruction.
 			wait_on_user(req, "failed", { title = ("%s — failed"):format(selection.provider), text = msg })
 			drop_marks(bufnr, req.marks)
 			ui.say(("[ducktape] %s — " .. K("inline_list") .. " to retry"):format(msg), vim.log.levels.ERROR)
 		end,
 		on_tool = function(name)
-			-- Recorded as well as rendered: the virtual text is only visible where the edit is,
-			-- and M.list shows the same thing for buffers that are not on screen.
 			req.activity = name
 			if req.progress then
 				req.progress.set_label(("%s · %s"):format(selection.provider, name))
@@ -1418,8 +1192,7 @@ function M.run(deep)
 	local bufnr = api.nvim_get_current_buf()
 	local range = capture_range()
 
-	-- Before the prompt rather than after it: being told the lines are taken is no use once an
-	-- instruction has been typed out.
+	-- Check before the prompt; being told the lines are taken is no use once an instruction is typed.
 	if blocked(bufnr, range) then
 		return
 	end
@@ -1477,11 +1250,6 @@ function M.reject(bufnr, diff)
 end
 
 ---Settle every diff in one buffer.
----
----Both directions are safe to do in bulk. Accepting only clears the diff's decorations — the
----reply is already in the buffer by then — so nothing shifts under the diffs not yet reached.
----Rejecting does write, but each restore resolves its own extmarks when it runs, so the lines a
----later diff puts back are the ones it currently owns rather than where it started.
 ---@param bufnr number
 ---@param action "accept"|"reject"
 ---@return number settled
@@ -1490,8 +1258,7 @@ local function settle_all(bufnr, action)
 	local pending = vim.tbl_values(buf_state(bufnr).diffs)
 	local settled = 0
 	for _, diff in ipairs(pending) do
-		-- A diff already resolved in the buffer is refused by codecompanion rather than applied
-		-- twice, so counting it would misreport what the buffer now holds.
+		-- A diff already resolved in the buffer is refused by codecompanion rather than applied twice.
 		if diff.ui and not diff.ui.resolved then
 			if action == "accept" then
 				M.accept(bufnr, diff)
@@ -1512,8 +1279,7 @@ local function settle_all_here(action)
 		return ui.say(("[ducktape] %s %d diff(s)"):format(action == "accept" and "accepted" or "rejected", settled))
 	end
 
-	-- Same distinction M.cancel draws: a diff belongs to the buffer it was made in, so "none here"
-	-- and "none anywhere" are different answers and only one of them means there is nothing to do.
+	-- A diff belongs to the buffer it was made in, so "none here" and "none anywhere" differ.
 	local elsewhere = 0
 	for _, entry in ipairs(M.list()) do
 		if entry.kind == "diff" and entry.bufnr ~= bufnr then
@@ -1531,16 +1297,12 @@ local function settle_all_here(action)
 	ui.say("[ducktape] no diffs waiting in this buffer", vim.log.levels.INFO)
 end
 
----Accept every diff in the current buffer. The bulk form of g2, scoped like `<leader>cX`.
+---Accept every diff in the current buffer. The bulk form of g2.
 function M.accept_all()
 	settle_all_here("accept")
 end
 
 ---Reject every diff in the current buffer, restoring each one's original lines.
----
----No key of its own: `<leader>cX` does this and cancels what is still running, and wanting one
----without the other turned out to be too fine a distinction to spend a key on. Kept because it is
----the honest half of the pair and `settle_all` needs the same reporting either way.
 function M.reject_all()
 	settle_all_here("reject")
 end
@@ -1554,20 +1316,14 @@ function M.hunk(bufnr, direction)
 	end
 	local keymaps = require("codecompanion.diff.keymaps")
 	local handler = direction == "next" and keymaps.next_hunk or keymaps.previous_hunk
-	-- The handler reads the cursor out of diff_ui.winnr, captured when the diff was created and
-	-- never revalidated, so a since-closed window would raise instead of reporting.
+	-- The handler reads diff_ui.winnr captured when the diff was created; a closed window raises.
 	if not (diff.ui and diff.ui.winnr and api.nvim_win_is_valid(diff.ui.winnr)) then
 		return ui.say("[ducktape] the window this diff was rendered in is gone", vim.log.levels.WARN)
 	end
 	handler.callback(diff.ui)
 end
 
----Discard the inline edit under the cursor: cancel it if it is still running, reject it if it has
----already answered.
----
----One key for "make this go away" whichever half of its life the edit is in. Being told to press
----something else instead is no use — the intent is the same either way, and which state the thing
----is in is exactly what is easy to lose track of while it changes on its own.
+---Discard the inline edit under the cursor: cancel it if running, reject it if answered.
 function M.cancel()
 	local bufnr = api.nvim_get_current_buf()
 	local st = buf_state(bufnr)
@@ -1581,17 +1337,15 @@ function M.cancel()
 		end
 	end
 
-	-- A finished one, where rejecting is what cancelling means. diff_under_cursor also answers
-	-- with the only pending diff when the cursor is outside every one, the same as g2/g3 — the
-	-- intent is unambiguous when there is nothing else it could mean.
+	-- A finished edit: diff_under_cursor also answers with the only pending diff when outside
+	-- every one, the same as g2/g3.
 	local diff = diff_under_cursor(bufnr)
 	if diff and diff.ui then
 		M.reject(bufnr, diff)
 		return ui.say("[ducktape] rejected the finished edit here")
 	end
 
-	-- A reply that arrived but could not be applied. Discarding is all there is to do to one of
-	-- these from the buffer; reading and re-asking live in the list.
+	-- A reply that arrived but could not be applied.
 	for _, entry in pairs(st.waiting) do
 		local ws, we = waiting_region(entry)
 		if ws and row >= ws and row < math.max(we, ws + 1) then
@@ -1607,9 +1361,8 @@ function M.cancel()
 	if ft == "codecompanion" then
 		return require("ducktape.chat").stop()
 	end
-	-- Requests run against the buffer they were started in, not the one on screen, so
-	-- "nothing here" and "nothing anywhere" are different answers and only one of them
-	-- means there is nothing to do.
+	-- Requests run against the buffer they were started in, so "nothing here" and "nothing
+	-- anywhere" are different answers.
 	local elsewhere = 0
 	for _, entry in ipairs(M.list()) do
 		if entry.bufnr ~= bufnr then
@@ -1627,9 +1380,8 @@ function M.cancel()
 	return ui.say("[ducktape] nothing in flight in this buffer", vim.log.levels.INFO)
 end
 
----Discard everything this buffer has in play: cancel every request still running, reject every diff
----that has answered, and dismiss every reply that was never read. The bulk form of `<leader>cx`, and
----the counterpart to `<leader>cA`, which keeps the answers instead.
+---Discard everything this buffer has in play: cancel every request, reject every diff, dismiss
+---every unread reply.
 function M.cancel_all()
 	local bufnr = api.nvim_get_current_buf()
 	local requests = vim.tbl_values(buf_state(bufnr).requests)
@@ -1638,8 +1390,7 @@ function M.cancel_all()
 	end
 	local rejected = settle_all(bufnr, "reject")
 
-	-- Unread replies included: this is the key for being done with all of it, and one that left rows
-	-- behind would need a second key to finish the job.
+	-- Unread replies included: this key means "done with all of it".
 	local waiting = vim.tbl_values(buf_state(bufnr).waiting)
 	for _, entry in ipairs(waiting) do
 		forget_waiting(entry)
@@ -1661,19 +1412,14 @@ function M.cancel_all()
 	ui.say("[ducktape] " .. table.concat(said, ", "))
 end
 
----Cancel one request, wherever it came from. What the list acts on; `M.cancel` and
----`M.cancel_all` reach the same code by way of the cursor and the buffer.
+---Cancel one request, wherever it came from.
 ---@param req table An entry's `request` field, from M.list
 function M.cancel_request(req)
 	cancel_request(req)
 end
 
----Everything inline has in play right now, across every buffer: requests still running, and
----finished edits whose diff nobody has decided on yet.
----
----Ordered by the request each entry came out of rather than by buffer or state, so an entry
----holds its place for as long as it exists — a list that reordered itself as requests finished
----would move rows under the cursor of whoever was reading them.
+---Everything inline has in play right now, across every buffer.
+---Ordered by request id so an entry holds its place while the user reads the list.
 ---@return { kind: "request"|"diff", order: number, bufnr: number, file: string, provider: string, model: string|nil, instruction: string|nil, activity: string|nil, deep: boolean|nil, since: number, hunks: number|nil, request: table|nil, diff: table|nil, resolve: fun(): number|nil, number|nil }[]
 function M.list()
 	local now = vim.uv.now()
@@ -1697,9 +1443,7 @@ function M.list()
 					deep = req.deep,
 					since = now - (req.started or now),
 					request = req,
-					-- A closure rather than a resolved pair: marks move as the buffer is edited,
-					-- and the caller acting on an entry wants where the range is now, not where it
-					-- was when the list was last drawn.
+					-- A closure: marks move as the buffer is edited, so callers see the current range.
 					resolve = function()
 						return resolve(bufnr, req.marks)
 					end,
@@ -1751,8 +1495,7 @@ function M.list()
 	return out
 end
 
----How much is in play, without building the whole list. What the statusline reads, so it is called
----on every redraw of every window and does no allocation beyond the table it returns.
+---How much is in play, without building the whole list. Called on every statusline redraw.
 ---@return { running: number, review: number, answered: number, failed: number, total: number }
 function M.counts()
 	local out = { running = 0, review = 0, answered = 0, failed = 0, total = 0 }
@@ -1777,8 +1520,7 @@ function M.counts()
 	return out
 end
 
----Open the reply itself. The float takes focus, which is right here and only here: it is opened
----because the user asked for it, not because something arrived.
+---Open the reply itself. The float takes focus, which is right here and only here.
 ---@param entry table An entry's `waiting` field, from M.list
 function M.read(entry)
 	local s0 = waiting_region(entry)
@@ -1829,17 +1571,8 @@ function M.to_chat(entry)
 end
 
 ---Get rid of whatever is on these lines and ask the same thing again.
----
----Works on anything in the list, which is what makes it worth a key of its own: a diff that came
----back wrong is rejected first, a request still running is cancelled, and a reply that came to
----nothing is dismissed. In every case the lines end up as they were before the request, which is
----what the new prompt has to be built from.
----
----Goes out with whatever provider and model are selected *now* rather than the one that answered.
----A wrong answer, a refusal and a failure are all common reasons to switch model, and re-sending to
----the thing that just got it wrong is rarely what is wanted.
 ---@param entry table An entry from M.list
----@param opts { instruction: string } The instruction, possibly reworded in the prompt float
+---@param opts { instruction: string }
 ---@return boolean started
 function M.ask_again(entry, opts)
 	local bufnr = entry.bufnr
@@ -1887,13 +1620,10 @@ function M.ask_again(entry, opts)
 		if not s0 then
 			return gone()
 		end
-		-- The region the *original* lines will occupy once they are back, not the one the reply
-		-- occupies now. The restore replaces the diff's region in place, so the start row holds.
+		-- The region the original lines will occupy once they are back.
 		local span = #diff.original
 		M.reject(bufnr, diff)
-		-- Behind the queued restore, so the prompt is built from the lines that came back rather
-		-- than from the reply being thrown away. vim.schedule is FIFO and the flush was booked
-		-- during the reject above, so this lands after it.
+		-- Schedule behind the queued restore so the prompt is built from the restored lines.
 		vim.schedule(function()
 			M.submit({
 				bufnr = bufnr,
@@ -1915,7 +1645,7 @@ function M.ask_again(entry, opts)
 		forget_waiting(waiting)
 		return gone()
 	end
-	-- Dropped first, so the range it was holding is free for the request that replaces it.
+	-- Drop first so the range is free for the request that replaces it.
 	forget_waiting(waiting)
 	return M.submit({
 		bufnr = bufnr,
@@ -1926,9 +1656,6 @@ function M.ask_again(entry, opts)
 end
 
 ---Open the prompt pre-filled with what was asked last time, then ask again.
----
----Pre-filled rather than blank so `<CR>` alone means "exactly that again", and asked *before*
----anything is settled so backing out of the prompt leaves everything as it was.
 ---@param entry table An entry from M.list
 function M.ask_again_prompt(entry)
 	local file = entry.file
@@ -1959,8 +1686,7 @@ function M.ask_again_here()
 				under = entry
 				break
 			end
-			-- The same courtesy g2/g3 extend: with one thing in the buffer there is nothing else
-			-- the key could have meant.
+			-- With one thing in the buffer there is nothing else the key could have meant.
 			only = only == nil and entry or false
 		end
 	end
@@ -1978,13 +1704,11 @@ function M.dismiss(entry)
 	forget_waiting(entry)
 end
 
----Switch the inline backend and model. Shared with chat — see ducktape.pick.
+---Switch the inline backend and model.
 function M.pick()
 	require("ducktape.pick").open("inline")
 end
 
----How many requests and diffs this buffer is carrying. Handy when checking by hand whether
----something is still in flight or a diff was left behind.
 ---@param bufnr number
 ---@return { requests: number, diffs: number, waiting: number }
 function M.stats(bufnr)

@@ -1,15 +1,5 @@
--- The model lists this machine can actually reach, written down so they survive an nvim restart.
---
--- Every list here is discovered by asking the provider — `opencode models`, ollama's `/api/tags` —
--- so nothing about it is machine-specific except the machine it was generated on. That is the point:
--- the plugin used to read a hand-maintained `opencode-models.json` from its author's dotfiles, which
--- meant a colleague's first paint was empty and their `auto` had nothing to resolve against.
---
--- Written on first discovery and re-read on the next start. `:Ducktape models` throws it away and
--- asks again, which is the only thing that picks up a model added since.
---
--- Kept apart from ducktape.providers on purpose: that module is what every other one reads, and it
--- stays free of load-time dependencies. This is required from inside its functions.
+-- Persist discovered model lists across nvim restarts so pickers are not empty on first open.
+-- `:Ducktape models` clears the cache and re-queries.
 
 local M = {}
 
@@ -22,10 +12,7 @@ end
 
 M.path = path
 
----What was written last time, or nil if there is nothing usable there.
----
----A version mismatch is treated as absent rather than migrated: the file is a cache of something
----the providers can be asked for again, so throwing it away costs one query.
+---Last written cache, or nil if missing/unusable. Version mismatches are treated as absent.
 ---@return table|nil
 function M.read()
 	local file = path()
@@ -43,19 +30,14 @@ function M.read()
 	return data
 end
 
----Persist a list under `key`, merging with whatever is already on disk.
----
----Merged rather than replaced because the lists arrive one query at a time — opencode from a
----subprocess, each ollama endpoint from its own request — and a write per arrival would otherwise
----drop the ones that answered earlier.
+---Persist a list under `key`, merging with what is already on disk. Lists arrive one query at a
+---time, so replacing would drop earlier answers.
 ---@param key string
 ---@param models string[]
 function M.write(key, models)
 	local data = M.read() or { version = VERSION, lists = {} }
 	data.lists = data.lists or {}
 	data.lists[key] = models
-	-- Stamped so `:checkhealth` can say how old this is. Not used to expire anything: a list that
-	-- is out of date is still better than an empty picker, and refreshing is one command.
 	data.generated_at = os.time()
 
 	local file = path()
@@ -63,7 +45,6 @@ function M.write(key, models)
 	pcall(vim.fn.writefile, { vim.json.encode(data) }, file)
 end
 
----Every persisted list, keyed as the in-memory cache keys them.
 ---@return table<string, string[]>
 function M.lists()
 	local data = M.read()
@@ -76,7 +57,6 @@ function M.generated_at()
 	return data and data.generated_at or nil
 end
 
----Throw the file away. The next query rewrites it.
 function M.clear()
 	pcall(vim.fn.delete, path())
 end

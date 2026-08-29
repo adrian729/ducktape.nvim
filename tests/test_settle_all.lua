@@ -1,5 +1,4 @@
--- Bulk settling: <leader>cA / <leader>cX in a buffer, A / X in the list. Plus the fact that
--- there is no reject key any more — x absorbed it, and r went to asking again.
+-- Bulk settling in buffers and the list; x absorbed reject, r went to ask-again.
 local pass, fail = 0, 0
 local REPORT = "/tmp/settle_all.out"
 local log_lines = {}
@@ -40,8 +39,7 @@ package.loaded["ducktape.inline.http"] = {
 
 local api = vim.api
 local inline = require("ducktape.inline")
--- This suite stubs `ducktape.inline.http`, which only the ollama provider routes through — pinned
--- explicitly rather than relying on the shipped default, which is opencode's relay.
+-- Stub ducktape.inline.http, which only the ollama provider routes through; pin it explicitly.
 require("ducktape.providers").set_provider("inline", "ollama")
 local list = require("ducktape.inline.list")
 
@@ -53,8 +51,7 @@ local function last_note()
 	return notes[#notes] or ""
 end
 
--- Wide enough that rows are not squeezed, and two windows so replies to both buffers land:
--- show_diff drops one whose buffer is on screen nowhere.
+-- Two windows so replies to off-screen buffers still land; wide enough that rows are not squeezed.
 vim.o.columns = 160
 vim.cmd("split")
 local win_a, win_b = api.nvim_list_wins()[1], api.nvim_list_wins()[2]
@@ -85,8 +82,7 @@ local function float_buf()
 	end
 end
 
----One request per line of `rows`, each answered with `reply_for(i)`, so a buffer ends up holding
----several pending diffs at once.
+---One request per row, answered with `reply_for(i)`, leaving several pending diffs in `buf`.
 local function fill(buf, win, rows, reply_for)
 	api.nvim_set_current_win(win)
 	local cbs = {}
@@ -104,7 +100,7 @@ local function fill(buf, win, rows, reply_for)
 	end
 end
 
----Leave nothing in play, so each section's counts are its own.
+---Leave nothing in play so each section's counts are its own.
 local function drain()
 	for _, e in ipairs(inline.list()) do
 		if e.kind == "request" then
@@ -173,7 +169,7 @@ say("\n=== rejecting a mix of one- and multi-line replies ===")
 local mix = target("mix.lua", { "m0", "m1", "m2", "m3", "m4" }, win_a)
 local mix_before = api.nvim_buf_get_lines(mix, 0, -1, false)
 api.nvim_set_current_win(win_a)
--- Row 0 grows to three lines, which shifts everything below it before the later diffs settle.
+-- Row 0 grows to three lines, shifting everything below before the later diffs settle.
 inline.submit({ bufnr = mix, range = { s0 = 0, e0 = 1, has_selection = true }, instruction = "grow" })
 local grow_cb = captured[#captured]
 inline.submit({ bufnr = mix, range = { s0 = 2, e0 = 4, has_selection = true }, instruction = "shrink" })
@@ -221,7 +217,7 @@ notes = {}
 inline.accept_all()
 ok(last_note():find("no diffs waiting in this buffer", 1, true) ~= nil, "says so plainly", last_note())
 
--- A diff in another buffer is a different answer: it is reachable, just not from here.
+-- A diff in another buffer is reachable, just not from here.
 local other = target("other.lua", { "o0", "o1" }, win_b)
 fill(other, win_b, { 0 }, function()
 	return "```lua\nO\n```"
@@ -281,8 +277,7 @@ ok(select(2, kinds()) == 2, "two diffs waiting", select(2, kinds()))
 list.open()
 lbuf = float_buf()
 
--- R used to reject everything. It is bound to say it does not rather than to do nothing, since a
--- silent key reads as a dropped keypress.
+-- R used to reject everything; now it says so, since silence reads as a dropped keypress.
 notes = {}
 press(lbuf, "R")
 vim.wait(100)
@@ -473,7 +468,7 @@ end)
 api.nvim_set_current_win(win_a)
 inline.submit({ bufnr = bk, range = { s0 = 2, e0 = 3, has_selection = true }, instruction = "running" })
 
--- cx with the cursor on the finished edit rejects it, rather than saying "nothing in flight".
+-- <leader>cx on a finished edit rejects it, not "nothing in flight".
 api.nvim_win_set_cursor(win_a, { 1, 0 })
 notes = {}
 inline.cancel()
@@ -483,7 +478,6 @@ ok(last_note():find("rejected", 1, true) ~= nil, "and says so", last_note())
 ok(api.nvim_buf_get_lines(bk, 0, 1, false)[1] == "k0", "restoring the line", api.nvim_buf_get_lines(bk, 0, 1, false)[1])
 ok(select(1, kinds()) == 1, "the running one is still going", select(1, kinds()))
 
--- And cX clears whatever is left, in either state.
 fill(bk, win_a, { 0 }, function()
 	return "```lua\nB2\n```"
 end)
@@ -507,8 +501,7 @@ ok(last_note():find("nothing in play", 1, true) ~= nil, "and says so when there 
 say("\n=== rejecting two adjacent regions at once ===")
 
 drain()
--- The case that was silently losing a line: neighbouring diffs, where restoring the lower one
--- pushes the upper one's end mark down a row.
+-- Neighbouring diffs used to lose a line when restoring the lower one pushed the upper end mark down.
 local adj = target("adjacent.lua", { "j0", "j1", "j2", "j3" }, win_a)
 fill(adj, win_a, { 0, 1, 2, 3 }, function(i)
 	return ("```lua\nNEW%d\n```"):format(i)

@@ -1,5 +1,4 @@
--- What M.run captures as the range, driven through the real keymap entry point with the input
--- float stubbed out.
+-- What M.run captures as the range, driven through the real keymap with the input float stubbed.
 local pass, fail = 0, 0
 local REPORT = "/tmp/inline_capture.out"
 local log_lines = {}
@@ -28,8 +27,7 @@ end)
 
 local api = vim.api
 
--- Both of ducktape.inline's collaborators are captured in locals at load time, so they have to be in
--- place before it is first required.
+-- ducktape.inline captures its collaborators at load time, so stub them before requiring it.
 local sent = {}
 package.loaded["ducktape.inline.http"] = {
 	send = function(opts, cb)
@@ -47,8 +45,7 @@ package.loaded["codecompanion.interactions.shared.input"] = {
 
 package.loaded["ducktape.inline"] = nil
 local inline = require("ducktape.inline")
--- This suite stubs `ducktape.inline.http`, which only the ollama provider routes through — pinned
--- explicitly rather than relying on the shipped default, which is opencode's relay.
+-- Stub ducktape.inline.http, which only the ollama provider routes through; pin it explicitly.
 require("ducktape.providers").set_provider("inline", "ollama")
 
 local notes = {}
@@ -110,7 +107,6 @@ ok(
 	sent[#sent].prompt:match("<file[^>]*>")
 )
 
--- It has to behave as a selection in every other respect too: guarded, and marked with an extent.
 local NS = api.nvim_get_namespaces()["ducktape_ui"]
 local tinted, labelled
 for _, m in ipairs(api.nvim_buf_get_extmarks(buf, NS, 0, -1, { details = true })) do

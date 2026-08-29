@@ -1,4 +1,4 @@
--- Run during startup (-c luafile), i.e. before VeryLazy: what exists before anything is pressed.
+-- Run at startup (-c luafile), before VeryLazy: verify lazy-loading state and keymaps.
 local pass, fail = 0, 0
 local function check(ok, what)
 	if ok then
@@ -79,7 +79,6 @@ check(vim.o.statusline:find("ducktape.statusline", 1, true) ~= nil, "statusline 
 check(vim.o.statusline:find("%{% &ruler ?", 1, true) ~= nil, "nvim's own statusline default kept")
 check(vim.fn.exists(":Ducktape") == 2, ":Ducktape command exists")
 
--- Still nothing loaded after all of the above.
 check(package.loaded["codecompanion"] == nil, "codecompanion still not loaded at the end")
 
 print(("startup: %d passed, %d failed"):format(pass, fail))

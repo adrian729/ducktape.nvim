@@ -1,18 +1,12 @@
--- OpenCode's tool-free relay: `opencode run` composed directly, no external command.
---
--- Guaranteed tool-free, no repo access. The agent it runs under is self-provisioned into a
--- project-local opencode.json under `AGENT_DIR` (below), so this never depends on the user's own
--- ~/.config/opencode having anything defined — a colleague with a bare `opencode` install gets the
--- same path with nothing to configure.
+-- OpenCode tool-free relay: composes `opencode run` directly. The agent is self-provisioned
+-- into a project-local config, so no user setup is required.
 
 local M = {}
 
 local AGENT_NAME = "ducktape-relay"
 local AGENT_DIR = vim.fn.stdpath("state") .. "/ducktape/opencode-relay"
 
--- Every tool denied and a prompt saying so: denying tools alone stops the write but not the
--- attempt, and an attempt with nothing to parse it leaks <tool_call> markup into the reply as
--- text (see providers.lua's `guard` comment on the ACP path, which found the same failure mode).
+-- Deny every tool and say so in the prompt; denial alone still leaks <tool_call> markup.
 local AGENT_CONFIG = vim.json.encode({
 	agent = {
 		[AGENT_NAME] = {
@@ -40,9 +34,7 @@ local AGENT_CONFIG = vim.json.encode({
 	},
 })
 
--- Written once per nvim session rather than once per request: the content is fixed, so a
--- module-local flag beats a stat+read on every inline call. Comparing before writing still
--- matters across sessions, since a stale copy from an older ducktape version should self-heal.
+-- Write once per nvim session; compare first so an older version self-heals.
 local provisioned = false
 local function ensure_agent_dir()
 	if provisioned then
@@ -57,12 +49,7 @@ local function ensure_agent_dir()
 	provisioned = true
 end
 
--- Wrapping content in `<content>` tags rather than a JSON envelope is deliberate: an earlier
--- revision's envelope made the same model return the whole enclosing function instead of the
--- selected lines, because "emit the code" reframes the task away from honouring the region
--- boundary (see docs/implementation.md). `opencode run` takes the whole thing as one argument, so
--- content and instruction fold into a single message rather than travelling as separate stdin/arg
--- channels.
+-- Wrap in <content> tags: an earlier JSON envelope made the model return the surrounding function.
 ---@param instruction string
 ---@param content string
 ---@return string
@@ -81,9 +68,7 @@ local function full_prompt(instruction, content)
 	}, "\n")
 end
 
--- `--format json` streams one JSON object per line. A `text` part can arrive more than once with
--- growing content under the same id, so a later occurrence replaces an earlier one rather than
--- appending — only the final text per id counts, concatenated in first-seen order.
+-- `--format json` streams one JSON object per line; later text for the same id replaces earlier.
 ---@param stdout string
 ---@return string? text
 ---@return string? err
@@ -127,9 +112,7 @@ function M.send(ctx, cb)
 		return { cancel = function() end }
 	end
 
-	-- The AUTO sentinel means "walk the fallback list", which is the relay's own default, so only
-	-- pin a model when the user picked one. Pinning disables the walk, which is the right trade for
-	-- inline: a dead model should surface as an error rather than silently change the model.
+	-- Pin a model only when the user picked one; AUTO walks the fallback list.
 	local pinned = (providers.opts_for("inline", ctx.provider) or {}).model
 	local models = (pinned and pinned ~= providers.AUTO) and { pinned } or providers.relay_models(ctx.provider)
 	if #models == 0 then
@@ -167,8 +150,7 @@ function M.send(ctx, cb)
 				if cancelled then
 					return
 				end
-				-- Terminal, not walked past: `vim.system`'s own timeout kill reports exit 124, and a
-				-- slow model is a reason to stop rather than a reason to try the next one.
+				-- vim.system's own timeout kill reports exit 124; a slow model stops here.
 				if out.code == 124 then
 					return cb.on_error(
 						("relay: timed out after %ds (model %s)"):format(math.floor(timeout / 1000), model)

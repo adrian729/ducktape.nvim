@@ -1,4 +1,4 @@
--- What a forked HTTP chat actually puts on the wire, read off a real Chat's on_submitted payload.
+-- What a forked HTTP chat puts on the wire, read from a real Chat's on_submitted payload.
 require("lazy").load({ plugins = { "codecompanion.nvim" } })
 
 local edit = require("ducktape.chat_edit")
@@ -27,7 +27,7 @@ vim.bo[chat.bufnr].modifiable = true
 vim.api.nvim_buf_set_lines(chat.bufnr, 0, -1, false, TRANSCRIPT)
 chat.parsers.markdown:parse(true)
 
--- The message table as a real first turn would have left it.
+-- The message table as a real first turn leaves it.
 local constants = require("codecompanion.config").constants
 chat.messages = {
 	{ role = constants.SYSTEM_ROLE, content = "system prompt", _meta = { sent = true } },

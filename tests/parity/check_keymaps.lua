@@ -1,4 +1,4 @@
--- The keymap hedge: the three ways a user's own mapping is meant to win, and what `false` does.
+-- Verify user mappings win and `false` disables globals without breaking <Plug> or buffer maps.
 local pass, fail = 0, 0
 local function check(ok, what)
 	if ok then
@@ -37,11 +37,11 @@ if variant == "keymaps_false" or variant == "globals_false" then
 	check(leader_count() == 0, "no <leader>c* defaults, got " .. leader_count())
 	check(plug_count() == 19, "all 19 <Plug> maps still there, got " .. plug_count())
 
-	-- A hand-rolled binding onto a <Plug> map has to work, or `false` costs the user the plugin.
+	-- A hand-rolled <Plug> binding must still work when globals are disabled.
 	vim.keymap.set("n", "<leader>zz", "<Plug>(DucktapeChatToggle)", { remap = true })
 	check(vim.fn.maparg(" zz", "n") ~= "", "own mapping onto a <Plug> map works")
 
-	-- `false` must not reach the buffer-local set, nor leave a message interpolating nil.
+	-- `false` must not corrupt buffer-local maps or produce nil-interpolated messages.
 	check(keys.lhs("diff_accept") == "g2", "diff_accept still resolves, got " .. tostring(keys.lhs("diff_accept")))
 	check(keys.label("diff_next_hunk") == "<leader>cj", "diff_next_hunk still resolves")
 	check(keys.label("cancel") == "<leader>cx", "a suppressed global still has a printable name")

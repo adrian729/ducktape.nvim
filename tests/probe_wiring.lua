@@ -6,7 +6,6 @@ print("modes kept:    " .. vim.inspect(send.modes))
 print("index kept:    " .. tostring(send.index))
 print("desc kept:     " .. tostring(send.description))
 
--- What the keymap layer would actually bind.
 local Keymaps = require("codecompanion.utils.keymaps")
 local km = Keymaps.new({
 	bufnr = 0,

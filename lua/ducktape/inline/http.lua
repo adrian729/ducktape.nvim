@@ -1,8 +1,5 @@
--- An HTTP provider, through codecompanion's own client. Structurally tool-free: no tool plumbing
--- exists on this path, so the text-only contract is guaranteed rather than merely asked for.
---
--- Which adapter is resolved comes from the provider spec — including its endpoint, where it has
--- one — so this serves any HTTP provider, not just the one that shipped first.
+-- HTTP provider through codecompanion's client. Resolved from the provider spec, so any HTTP
+-- adapter works.
 
 local adapters = require("codecompanion.adapters")
 local client = require("codecompanion.http")
@@ -25,19 +22,15 @@ function M.send(ctx, cb)
 		return { cancel = function() end }
 	end
 
-	-- Inline needs one complete reply, not a stream of chunks to reassemble. The ollama adapter's
-	-- own setup() handler reads opts.stream and mirrors it into parameters.stream, so setting it
-	-- here is enough.
+	-- Inline needs one complete reply, not chunks to reassemble.
 	adapter.opts.stream = false
-	-- Must run before the request: setup() assigns into adapter.parameters, and this is what
-	-- creates that table — along with model, think, num_ctx and keep_alive from the schema.
+	-- Creates adapter.parameters; must run before the request.
 	adapter:map_schema_to_params()
 
 	local timeout = ctx.timeout or require("ducktape.config").get().inline.timeout_ms
 	local job, watchdog
 
-	-- The client invokes this callback twice on an HTTP error: once with the 4xx body as though
-	-- it were a reply, then again with an error table. Settle on the first one that decides.
+	-- The client can invoke this callback twice on an HTTP error (body, then error table).
 	local settled = false
 	local function done(fn, arg)
 		if settled then
@@ -51,7 +44,7 @@ function M.send(ctx, cb)
 		fn(arg)
 	end
 
-	---Body text of an error response, which providers use to explain themselves
+	---Body text of an error response.
 	---@param data table|nil
 	---@return string
 	local function error_detail(data)
@@ -66,9 +59,8 @@ function M.send(ctx, cb)
 		return vim.trim(body):sub(1, 200)
 	end
 
-	-- Ours, because the client has none on this path: Client:request builds its curl options with
-	-- no timeout key, so the `opts.timeout` it documents is only read on plenary's synchronous
-	-- branch, which this never takes. Without this a wedged ollama spins the spinner forever.
+	-- The client's documented timeout is only read on its synchronous branch; without our own
+	-- watchdog a wedged request would spin forever.
 	watchdog = vim.defer_fn(function()
 		watchdog = nil
 		if job then
@@ -95,8 +87,7 @@ function M.send(ctx, cb)
 				return
 			end
 
-			-- Checked before the adapter's own parser, which assumes a well-formed reply and
-			-- errors out indexing the error body instead
+			-- Check HTTP status before the adapter's parser, which assumes a well-formed reply.
 			local status = type(data) == "table" and data.status or nil
 			if status and status >= 400 then
 				local detail = error_detail(data)

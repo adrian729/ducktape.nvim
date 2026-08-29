@@ -1,5 +1,4 @@
--- Edge cases for ducktape.inline.list: narrow windows, deleted ranges, keys on the wrong row,
--- teardown, and more entries than fit.
+-- Edge cases for ducktape.inline.list.
 local pass, fail = 0, 0
 local REPORT = "/tmp/inline_edges.out"
 local log_lines = {}
@@ -42,7 +41,6 @@ local api = vim.api
 local inline = require("ducktape.inline")
 local list = require("ducktape.inline.list")
 
--- Every notification, so guidance given instead of a wrong action can be checked.
 local notes = {}
 require("ducktape.ui").say = function(msg)
 	table.insert(notes, tostring(msg))
@@ -136,8 +134,7 @@ local buf = target("gone.lua", { "keep = 0", "doomed = 1", "doomed = 2", "keep =
 inline.submit({ bufnr = buf, range = { s0 = 1, e0 = 3, has_selection = true }, instruction = "fix these" })
 api.nvim_buf_set_lines(buf, 1, 3, false, {})
 vim.wait(150)
--- The guard puts them back rather than letting the request lose its anchor, so "range gone" is
--- no longer a state the list can be caught in for more than a tick.
+-- The guard restores the lines so the request never loses its anchor.
 local entries = inline.list()
 ok(#entries == 1 and entries[1].resolve() == 1, "the range is put back and still anchored", entries[1].resolve())
 ok(
@@ -163,8 +160,7 @@ ok(
 	notes[1]
 )
 ok(#inline.list() == 1, "and settled nothing", #inline.list())
--- g3 is an alias for discard, not for a reject that no longer exists, so on a running row it
--- cancels rather than explaining itself.
+-- g3 is discard, not reject; on a running row it cancels without explanation.
 notes = {}
 press(lbuf, "g3")
 ok(#notes == 1 and notes[1]:find("cancelled", 1, true) ~= nil, "g3 discards, cancelling the request", notes[1])
@@ -181,7 +177,7 @@ ok(list.is_open(), "reopened")
 api.nvim_set_current_win(other)
 vim.wait(200)
 ok(not list.is_open(), "leaving the window closed it")
--- If the redraw timer had outlived the window, this is where it would throw.
+-- A redraw timer that outlived the window would throw here.
 vim.wait(300)
 ok(true, "and the redraw timer went with it")
 
@@ -204,7 +200,6 @@ list.open()
 local win, lbuf2, cfg = float()
 ok(cfg ~= nil and cfg.height <= vim.o.lines - 6, "the window is capped to the screen", cfg and cfg.height)
 ok(#api.nvim_buf_get_lines(lbuf2, 0, -1, false) == 40, "every entry is still a row, scrolled", nil)
--- The cursor has to be able to reach a row past the window's height.
 for _ = 1, 39 do
 	press(lbuf2, "j")
 end
@@ -253,8 +248,7 @@ inline.submit({ bufnr = hbuf, range = { s0 = 1, e0 = 2, has_selection = true }, 
 list.open()
 local hwin, hlistbuf, hcfg = float()
 local hfooter = hcfg and type(hcfg.footer) == "table" and hcfg.footer[1][1] or tostring(hcfg and hcfg.footer)
--- The footer used to spell out all six keys, which cost 94 cells and, since the window is sized to
--- fit its footer, made every list at least 96 wide — wider than its own rows need.
+-- The footer used to spell out all keys, forcing the window wider than its rows needed.
 ok(
 	vim.fn.strdisplaywidth(hfooter) <= 43,
 	"the footer is short enough not to set the width",
@@ -290,7 +284,6 @@ ok(overlay() == nil and list.is_open(), "q dismisses the overlay first, keeping 
 press(hlistbuf, "q")
 ok(not list.is_open(), "and closes the list on the next press")
 
--- Closing the list has to take the overlay with it: it is a float of its own, so nothing else would.
 list.open()
 local hlistbuf2 = select(2, float())
 press(hlistbuf2, "?")
@@ -324,8 +317,7 @@ ok(#inline.list() == 0, "with nothing in play anywhere", #inline.list())
 notes = {}
 list.open()
 local ewin, ebuf, ecfg = float()
--- The point of the change: answering a keypress with a command-line message reads as "nothing
--- happened". The window is where the answer was expected, so the window opens and says it.
+-- A command-line message reads as "nothing happened"; open the window and say it there.
 ok(ewin ~= nil, "the window still opens")
 ok(#notes == 0, "instead of a message on the command line", vim.inspect(notes))
 local body = ebuf and api.nvim_buf_get_lines(ebuf, 0, -1, false) or {}
@@ -334,7 +326,6 @@ local etitle = ecfg and type(ecfg.title) == "table" and ecfg.title[1][1] or tost
 ok(etitle:find("settled", 1, true) ~= nil, "and in the title", etitle)
 ok(ecfg ~= nil and ecfg.height == 1, "one row tall, not an empty box", ecfg and ecfg.height)
 
--- Every key, on a list with no row under the cursor
 for _, key in ipairs({ "j", "k", "a", "r", "x", "A", "R", "X", "g2", "g3", "<CR>" }) do
 	local pressed = pcall(press, ebuf, key)
 	ok(pressed, ("pressing %q on an empty list is harmless"):format(key))

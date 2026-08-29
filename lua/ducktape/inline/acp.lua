@@ -1,6 +1,5 @@
--- claude and opencode over ACP, through the connection pool. `ci` and `cI` differ only in the
--- prompt they send; write safety comes from the session mode or permission set configured with
--- the adapters, since those govern the agents' own tools — the only path either one uses.
+-- claude and opencode over ACP, through the connection pool. Tool use is controlled by the
+-- adapter's permissions.
 
 local pool = require("ducktape.acp_pool")
 

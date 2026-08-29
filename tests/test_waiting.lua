@@ -1,5 +1,4 @@
--- Replies that cannot be applied: prose and failures are registered rather than thrown at the
--- screen, marked in the buffer, listed, retryable, and counted in the statusline.
+-- Non-applicable replies (prose, failures) are registered, marked, listed, retryable, and counted.
 local pass, fail = 0, 0
 local REPORT = "/tmp/inline_waiting.out"
 local log_lines = {}
@@ -35,14 +34,14 @@ package.loaded["ducktape.inline.http"] = {
 		return { cancel = function() end }
 	end,
 }
--- The prompt float, stubbed so `e` can be driven and its pre-filled text inspected.
+-- Stub the prompt float so `e` can be driven and its pre-filled text inspected.
 local prompts = {}
 package.loaded["codecompanion.interactions.shared.input"] = {
 	open = function(opts)
 		table.insert(prompts, { title = opts.title, initial = opts.initial_content, on_submit = opts.on_submit })
 	end,
 }
--- Chat hand-off, stubbed: opening a real chat needs an adapter.
+-- Stub chat hand-off; opening a real chat needs an adapter.
 local chats = {}
 package.loaded["ducktape.chat"] = {
 	open_with_context = function(o)
@@ -53,8 +52,7 @@ package.loaded["ducktape.chat"] = {
 
 package.loaded["ducktape.inline"] = nil
 local inline = require("ducktape.inline")
--- This suite stubs `ducktape.inline.http`, which only the ollama provider routes through — pinned
--- explicitly rather than relying on the shipped default, which is opencode's relay.
+-- Stub ducktape.inline.http, which only the ollama provider routes through; pin it explicitly.
 require("ducktape.providers").set_provider("inline", "ollama")
 local list = require("ducktape.inline.list")
 local statusline = require("ducktape.statusline")
@@ -165,8 +163,7 @@ ok(
 	plabels[1] and plabels[1].text
 )
 ok(#ptints == 1, "and the range is still tinted", #ptints)
--- Warm while it runs, cool once the reply is parked: the two states are told apart by colour and
--- not only by the label, so a marked range read at a glance says which it is.
+-- Warm while running, cool once parked: colour distinguishes the states at a glance.
 ok(ptints[1].hl == "DucktapeInlineWaiting", "in the waiting colour, not the running one", ptints[1].hl)
 
 say("\n=== the statusline says so from anywhere ===")
@@ -174,7 +171,7 @@ say("\n=== the statusline says so from anywhere ===")
 local rendered = statusline.render()
 ok(rendered:find("1◆", 1, true) ~= nil, "the segment counts it", rendered)
 ok(rendered:find("DucktapeListReady", 1, true) ~= nil, "with a highlight group", rendered)
--- Rendered through nvim itself, since a bad statusline expression breaks the whole bar.
+-- Render through nvim itself; a bad statusline expression breaks the whole bar.
 vim.o.statusline = "%<%f%=%{%v:lua.require'ducktape.statusline'.render()%}%P"
 local evaluated = api.nvim_eval_statusline(vim.o.statusline, { winid = 0, maxwidth = 120 })
 ok(evaluated.str:find("1◆", 1, true) ~= nil, "and nvim evaluates it without error", evaluated.str)
@@ -267,7 +264,6 @@ ok(
 	sent[#sent].prompt:match("<selection>.-</selection>")
 )
 
--- And a reworded retry sends the new wording.
 sent[#sent].cb.on_error("again")
 vim.wait(200)
 prompts = {}
@@ -308,8 +304,7 @@ ok(
 	"and it is the only thing in play",
 	inline.list()[1] and inline.list()[1].kind
 )
--- The rejection has to land before the new prompt is built, or the model is asked about the reply
--- being thrown away instead of the code.
+-- The rejection must land before the new prompt is built, or the model sees the discarded reply.
 ok(
 	sent[#sent].prompt:find("<selection>\nd1\n</selection>", 1, true) ~= nil,
 	"asking about the restored original, not the rejected reply",
@@ -367,7 +362,6 @@ ok(
 	inline.list()[1] and inline.list()[1].kind
 )
 
--- Off the row, with nothing else in the buffer, it still knows what was meant.
 drain()
 inline.submit({ bufnr = ch, range = { s0 = 0, e0 = 1, has_selection = true }, instruction = "the only one" })
 sent[#sent].cb.on_error("boom again")
@@ -390,7 +384,6 @@ say("\n=== bulk keys leave unread replies alone ===")
 
 drain()
 local mix = target("mix.lua", { "m0", "m1", "m2", "m3", "m4" })
--- One diff waiting, one prose reply.
 inline.submit({ bufnr = mix, range = { s0 = 0, e0 = 1, has_selection = true }, instruction = "becomes a diff" })
 sent[#sent].cb.on_done("```lua\nDIFFED\n```")
 vim.wait(150)
@@ -420,7 +413,6 @@ ok(#inline.list() == 0, "x on its own row dismisses it", #inline.list())
 ok(last_note():find("dismissed", 1, true) ~= nil, "saying so", last_note())
 press(bbuf, "q")
 
--- And X empties the list outright, unread replies included.
 drain()
 local xa = target("x_all.lua", { "q0", "q1", "q2", "q3", "q4" })
 inline.submit({ bufnr = xa, range = { s0 = 0, e0 = 1, has_selection = true }, instruction = "will diff" })
@@ -474,7 +466,7 @@ inline.submit({ bufnr = again, range = { s0 = 1, e0 = 2, has_selection = true },
 sent[#sent].cb.on_done("I cannot do that without more context.")
 vim.wait(200)
 ok(#inline.list() == 1, "a reply is waiting", #inline.list())
--- A prose reply holds no lines, so a fresh request over them is allowed and replaces it.
+-- A prose reply holds no lines, so a fresh request over the same lines is allowed and replaces it.
 notes = {}
 local re =
 	inline.submit({ bufnr = again, range = { s0 = 1, e0 = 2, has_selection = true }, instruction = "second ask" })

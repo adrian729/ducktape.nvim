@@ -27,8 +27,7 @@ local function history()
 	return vim.api.nvim_exec2("messages", { output = true }).output or ""
 end
 local function shown()
-	-- the last line of the history is what the fitted echo would have put on the command line only
-	-- when it fits; for the overflow case the display is not in history, so this reads the full text
+	-- last history line is the fitted echo; overflow text is read from the full message
 	local h = vim.split(history(), "\n", { plain = true })
 	return h[#h] ~= "" and h[#h] or h[#h - 1] or ""
 end
