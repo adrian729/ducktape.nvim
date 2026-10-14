@@ -4,23 +4,19 @@
 ==============================================================================
 Table of Contents                                 *ducktape-table-of-contents*
 
-1. ducktape.nvim                                      |ducktape-ducktape.nvim|
-  - What Is Ducktape?               |ducktape-ducktape.nvim-what-is-ducktape?|
-  - Table of Contents               |ducktape-ducktape.nvim-table-of-contents|
-  - Getting Started                   |ducktape-ducktape.nvim-getting-started|
-  - Usage                                       |ducktape-ducktape.nvim-usage|
-  - Default Mappings                 |ducktape-ducktape.nvim-default-mappings|
-  - Configuration                       |ducktape-ducktape.nvim-configuration|
-  - Troubleshooting                   |ducktape-ducktape.nvim-troubleshooting|
-  - Contributing                         |ducktape-ducktape.nvim-contributing|
-  - Licence                                   |ducktape-ducktape.nvim-licence|
-2. Keymaps                                                  |ducktape-keymaps|
+  - What Is Ducktape?                             |ducktape-what-is-ducktape?|
+  - Table of Contents                             |ducktape-table-of-contents|
+  - Getting Started                                 |ducktape-getting-started|
+  - Usage                                                     |ducktape-usage|
+  - Default Mappings                               |ducktape-default-mappings|
+  - Configuration                                     |ducktape-configuration|
+  - Troubleshooting                                 |ducktape-troubleshooting|
+  - Contributing                                       |ducktape-contributing|
+  - Licence                                                 |ducktape-licence|
+1. Keymaps                                                  |ducktape-keymaps|
   - Keymaps                                         |ducktape-keymaps-keymaps|
-3. Usage                                                      |ducktape-usage|
+2. Usage                                                      |ducktape-usage|
   - How to use ducktape                   |ducktape-usage-how-to-use-ducktape|
-
-==============================================================================
-1. ducktape.nvim                                      *ducktape-ducktape.nvim*
 
 
 
@@ -29,7 +25,7 @@ Inline AI editing and chat sessions on top of codecompanion.nvim
 UX across every provider you configure.
 
 
-WHAT IS DUCKTAPE?                   *ducktape-ducktape.nvim-what-is-ducktape?*
+WHAT IS DUCKTAPE?                                 *ducktape-what-is-ducktape?*
 
 `ducktape.nvim` is a layer that makes a working day out of codecompanion’s
 adapters. Several inline edits in flight at once without stepping on each
@@ -48,18 +44,18 @@ An inline edit settling. Every request is judged code or prose; a reply that
 turns out to be prose is kept and readable instead of thrown away.
 
 
-TABLE OF CONTENTS                   *ducktape-ducktape.nvim-table-of-contents*
+TABLE OF CONTENTS                                 *ducktape-table-of-contents*
 
-- |ducktape-ducktape.nvim-getting-started|
+- |ducktape-getting-started|
 - |ducktape-usage|
-- |ducktape-ducktape.nvim-default-mappings|
-- |ducktape-ducktape.nvim-configuration|
-- |ducktape-ducktape.nvim-troubleshooting|
-- |ducktape-ducktape.nvim-contributing|
-- |ducktape-ducktape.nvim-licence|
+- |ducktape-default-mappings|
+- |ducktape-configuration|
+- |ducktape-troubleshooting|
+- |ducktape-contributing|
+- |ducktape-licence|
 
 
-GETTING STARTED                       *ducktape-ducktape.nvim-getting-started*
+GETTING STARTED                                     *ducktape-getting-started*
 
 
 REQUIREMENTS ~
@@ -171,7 +167,7 @@ internal by name, the external programs, whether setup ran to completion, what
 models have been discovered and what `auto` currently resolves to.
 
 
-USAGE                                           *ducktape-ducktape.nvim-usage*
+USAGE                                                         *ducktape-usage*
 
 
 INLINE EDITING ~
@@ -228,12 +224,11 @@ place it yourself. `:Ducktape pool`, `:Ducktape send` and `:Ducktape models`
 are there for when something looks wrong.
 
 
-DEFAULT MAPPINGS                     *ducktape-ducktape.nvim-default-mappings*
+DEFAULT MAPPINGS                                   *ducktape-default-mappings*
 
 The 19 global keymaps. Each also has a `<Plug>(Ducktape…)` mapping, so you
 can bind your own key without touching the config; per-action overrides use the
-`<Plug>` names lowercased with underscores — see
-|ducktape-ducktape.nvim-configuration|.
+`<Plug>` names lowercased with underscores — see |ducktape-configuration|.
 
   -----------------------------------------------------------------------
   Mappings                            Action
@@ -296,7 +291,7 @@ under `keymaps.panels`, and every message and help overlay is built from your
 bindings. Full tables in `docs/keymaps.md` <docs/keymaps.md>.
 
 
-CONFIGURATION                           *ducktape-ducktape.nvim-configuration*
+CONFIGURATION                                         *ducktape-configuration*
 
 `opts = {}` is a complete configuration — the defaults are the setup this was
 extracted from, so configuring nothing is the supported case.
@@ -585,7 +580,7 @@ your own config:
 <
 
 
-TROUBLESHOOTING                       *ducktape-ducktape.nvim-troubleshooting*
+TROUBLESHOOTING                                     *ducktape-troubleshooting*
 
 - `:checkhealth ducktape` first.
 - **Every keymap refuses with a message.** Setup did not finish. Codecompanion loads extensions inside a `pcall` that only logs, so check `:messages` and that `extensions.ducktape` is spelled the way it is above. Refusing is deliberate: the adapters that deny agent writes are installed by that setup, and running without them is worse than not running.
@@ -596,7 +591,7 @@ inside is `docs/implementation.md` <docs/implementation.md>. After installing,
 |ducktape|.
 
 
-CONTRIBUTING                             *ducktape-ducktape.nvim-contributing*
+CONTRIBUTING                                           *ducktape-contributing*
 
 >sh
     make test        # the suites, under a minimal_init that fetches its own dependencies
@@ -614,21 +609,21 @@ which is what makes lazy.nvim’s `version = "*"` and `vim.pack`’s
 `vim.version.range()` work.
 
 
-LICENCE                                       *ducktape-ducktape.nvim-licence*
+LICENCE                                                     *ducktape-licence*
 
 MIT. Codecompanion is Apache-2.0 and is not vendored here — ducktape calls
 its API and copies none of its code.
 
 
 ==============================================================================
-2. Keymaps                                                  *ducktape-keymaps*
+1. Keymaps                                                  *ducktape-keymaps*
 
 
 KEYMAPS                                             *ducktape-keymaps-keymaps*
 
 Every key below is either ducktape’s or codecompanion’s, and the tables say
-which. Ducktape’s global set is configurable — see
-|ducktape-ducktape.nvim-configuration| at the bottom.
+which. Ducktape’s global set is configurable — see |ducktape-configuration|
+at the bottom.
 
 
 GLOBAL — DUCKTAPE ~
@@ -952,7 +947,7 @@ normal-mode only.
 
 
 ==============================================================================
-3. Usage                                                      *ducktape-usage*
+2. Usage                                                      *ducktape-usage*
 
 
 HOW TO USE DUCKTAPE                       *ducktape-usage-how-to-use-ducktape*
