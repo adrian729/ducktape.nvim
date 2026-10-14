@@ -1,5 +1,5 @@
 *ducktape.txt*
-                                 For NVIM v0.11    Last change: 2026 August 10
+                                For NVIM v0.11    Last change: 2026 October 14
 
 ==============================================================================
 Table of Contents                                 *ducktape-table-of-contents*
@@ -21,6 +21,8 @@ Table of Contents                                 *ducktape-table-of-contents*
 
 ==============================================================================
 1. ducktape.nvim                                      *ducktape-ducktape.nvim*
+
+
 
 Inline AI editing and chat sessions on top of codecompanion.nvim
 <https://github.com/olimorris/codecompanion.nvim>’s adapters, with one option
@@ -48,13 +50,13 @@ turns out to be prose is kept and readable instead of thrown away.
 
 TABLE OF CONTENTS                   *ducktape-ducktape.nvim-table-of-contents*
 
-- |ducktape-getting-started|
+- |ducktape-ducktape.nvim-getting-started|
 - |ducktape-usage|
-- |ducktape-default-mappings|
-- |ducktape-configuration|
-- |ducktape-troubleshooting|
-- |ducktape-contributing|
-- |ducktape-licence|
+- |ducktape-ducktape.nvim-default-mappings|
+- |ducktape-ducktape.nvim-configuration|
+- |ducktape-ducktape.nvim-troubleshooting|
+- |ducktape-ducktape.nvim-contributing|
+- |ducktape-ducktape.nvim-licence|
 
 
 GETTING STARTED                       *ducktape-ducktape.nvim-getting-started*
@@ -153,7 +155,7 @@ VIM.PACK (NEOVIM 0.12+)
       { src = "https://github.com/adrian729/ducktape.nvim",
         version = vim.version.range("*") },
     })
-    
+
     require("codecompanion").setup({ extensions = { ducktape = { opts = {} } } })
 <
 
@@ -211,11 +213,10 @@ One option UX across every provider you configure. `<leader>cmi` switches the
 inline backend and model, `<leader>cmc` the chat’s. A label at the point of
 choice says what a model draws on — free · cloud, subscription · claude.
 
-Model lists discover themselves — see
-|ducktape-model-lists-discover-themselves|. `<leader>cmr` (or `:Ducktape
-models`) re-asks every provider and reports what came back; that is the only
-thing that picks up a model you just pulled, a subscription that just started,
-or an `opencode auth login`.
+Model lists discover themselves — see Model lists discover themselves.
+`<leader>cmr` (or `:Ducktape models`) re-asks every provider and reports what
+came back; that is the only thing that picks up a model you just pulled, a
+subscription that just started, or an `opencode auth login`.
 
 
 STATUS ~
@@ -231,7 +232,8 @@ DEFAULT MAPPINGS                     *ducktape-ducktape.nvim-default-mappings*
 
 The 19 global keymaps. Each also has a `<Plug>(Ducktape…)` mapping, so you
 can bind your own key without touching the config; per-action overrides use the
-`<Plug>` names lowercased with underscores — see |ducktape-configuration|.
+`<Plug>` names lowercased with underscores — see
+|ducktape-ducktape.nvim-configuration|.
 
   -----------------------------------------------------------------------
   Mappings                            Action
@@ -309,7 +311,7 @@ applied `opts`, so anything it acts on has to come from `vim.g.ducktape`:
   vim.g.ducktape             keymaps, statusline     startup
 
   codecompanion              everything else         codecompanion.setup()
-  extensions.ducktape.opts                           
+  extensions.ducktape.opts
   --------------------------------------------------------------------------
 Putting a field in the wrong table means it is silently ignored, so
 `:checkhealth ducktape` validates each route against its own list and names the
@@ -343,7 +345,7 @@ EXTENSION OPTS ~
       -- provider offers. A name that is not one of the three shipped ones **adds a provider** — see
       -- "Adding a provider" below.
       providers = {},
-    
+
       -- The current selection, per interaction and per provider.
       defaults = {
         inline = {
@@ -363,17 +365,17 @@ EXTENSION OPTS ~
           },
         },
       },
-    
+
       -- Deep-merged over the adapter definitions ducktape installs into codecompanion. These carry
       -- the write defence — the 90s timeout, Claude's `mode = dontAsk`, OpenCode's deny set — so
       -- override with care, and read what :checkhealth says about it afterwards.
       adapters = {},
-    
+
       -- Claim codecompanion's chat/inline/cmd adapter defaults when they are still its own stock
       -- "copilot". An explicit choice of yours always survives; set this to false if your explicit
       -- choice happens to be copilot.
       set_default_adapters = true,
-    
+
       -- Inline editing. `prompt` is the contract the model is held to and the single biggest lever on
       -- the quality of what comes back.
       inline = {
@@ -389,13 +391,13 @@ EXTENSION OPTS ~
           replace = false,       -- true to use only what is configured
         },
       },
-    
+
       -- The pool of ACP connections behind inline, per provider.
       pool = {
         cap = 3, idle_overflow_ms = 60000, idle_primary_ms = 900000,
         reap_interval_ms = 15000, timeout_ms = 90000,
       },
-    
+
       ui = {
         border = "rounded",
         -- "auto" takes telescope if installed and a built-in float otherwise. Also accepts
@@ -406,7 +408,7 @@ EXTENSION OPTS ~
         -- colourscheme or your own `nvim_set_hl` wins over both.
         highlights = {},
       },
-    
+
       -- What counts as "this project". Two settings, each defaulting to what it already did:
       --   scope  which resumable agent sessions the chat list offers — the repository root, so they do
       --          not vanish when nvim is opened in a subdirectory
@@ -625,8 +627,8 @@ its API and copies none of its code.
 KEYMAPS                                             *ducktape-keymaps-keymaps*
 
 Every key below is either ducktape’s or codecompanion’s, and the tables say
-which. Ducktape’s global set is configurable — see |ducktape-configuration|
-at the bottom.
+which. Ducktape’s global set is configurable — see
+|ducktape-ducktape.nvim-configuration| at the bottom.
 
 
 GLOBAL — DUCKTAPE ~
@@ -638,79 +640,79 @@ your own key without touching the config.
   Key               Modes             Action            <Plug> name
   ----------------- ----------------- ----------------- ---------------------------------
   <leader>cc        n                 Toggle the last   <Plug>(DucktapeChatToggle)
-                                      chat, reopening   
-                                      it after a        
-                                      restart           
+                                      chat, reopening
+                                      it after a
+                                      restart
 
   <leader>cf        n                 Jump between the  <Plug>(DucktapeChatFocus)
-                                      chat and the file 
-                                      — opens the chat  
-                                      if it is hidden   
+                                      chat and the file
+                                      — opens the chat
+                                      if it is hidden
 
   <leader>cn        n, x              New chat on the   <Plug>(DucktapeChatNew)
-                                      current provider  
-                                      and options       
+                                      current provider
+                                      and options
 
   <leader>cq        n                 Close every chat  <Plug>(DucktapeChatCloseAll)
 
   <leader>cr        n                 Rename the        <Plug>(DucktapeChatRename)
-                                      current chat      
+                                      current chat
 
   <leader>cd        n                 Delete the        <Plug>(DucktapeChatDelete)
-                                      current chat and  
-                                      its saved         
-                                      transcript        
+                                      current chat and
+                                      its saved
+                                      transcript
 
   <leader>cl        n                 Chat list — live  <Plug>(DucktapeChatList)
-                                      chats plus every  
-                                      resumable session 
-                                      for the repo      
+                                      chats plus every
+                                      resumable session
+                                      for the repo
 
   <leader>cmc       n                 Switch the chat   <Plug>(DucktapeChatPick)
-                                      backend / model   
+                                      backend / model
 
   <leader>ca        n, x              CodeCompanion’s   <Plug>(DucktapeActions)
-                                      action palette    
+                                      action palette
 
   <leader>ci        n, x              Inline prompt —   <Plug>(DucktapeInline)
-                                      no tools, no repo 
-                                      reads             
+                                      no tools, no repo
+                                      reads
 
   <leader>cI        n, x              Inline prompt     <Plug>(DucktapeInlineDeep)
-                                      that may read the 
-                                      repo (ACP         
-                                      providers only)   
+                                      that may read the
+                                      repo (ACP
+                                      providers only)
 
   <leader>cmi       n                 Switch the inline <Plug>(DucktapeInlinePick)
-                                      backend / model   
+                                      backend / model
 
   <leader>cmr       n                 Re-ask every      <Plug>(DucktapeModelsRefresh)
-                                      provider which    
-                                      models it can     
-                                      reach             
+                                      provider which
+                                      models it can
+                                      reach
 
   <leader>cL        n                 Inline list — in  <Plug>(DucktapeInlineList)
-                                      flight plus       
-                                      waiting for       
-                                      review            
+                                      flight plus
+                                      waiting for
+                                      review
 
   <leader>cA        n                 Accept every      <Plug>(DucktapeInlineAcceptAll)
-                                      inline diff in    
-                                      this buffer       
+                                      inline diff in
+                                      this buffer
 
   <leader>cR        n                 Ask again about   <Plug>(DucktapeInlineAskAgain)
-                                      the inline edit   
-                                      under the cursor  
+                                      the inline edit
+                                      under the cursor
 
   <leader>cx        n                 Cancel the inline <Plug>(DucktapeCancel)
-                                      request under the 
-                                      cursor; in a      
-                                      chat, stop the    
-                                      agent             
+                                      request under the
+                                      cursor; in a
+                                      chat, stop the
+                                      agent
 
   <leader>cX        n                 Cancel every      <Plug>(DucktapeCancelAll)
-                                      inline request in 
-                                      this buffer       
+                                      inline request in
+                                      this buffer
 
   <leader>cs        n                 Status panel      <Plug>(DucktapeStatus)
   ---------------------------------------------------------------------------------------
@@ -797,7 +799,7 @@ per keystroke.
   j / k / <Down> / <Up>               Move between options
 
   l / h / <Left> / <Right> / <Tab> /  Cycle the selected option’s value
-  <S-Tab>                             
+  <S-Tab>
 
   <CR>                                Confirm
 
@@ -1299,8 +1301,8 @@ nothing at all:
 
   free · cloud            Free tier, but          Ollama Cloud’s own
                           rate-limited: light     free-tier terms
-                          GPU-time, 1 concurrent  
-                          model                   
+                          GPU-time, 1 concurrent
+                          model
 
   subscription · claude   Counts against your     claude-agent-acp
                           Claude plan             authenticates with
@@ -1462,11 +1464,10 @@ Both rules are switchable:
 
 **Switching chat provider or model:**
 
-Press `<leader>cmc` — the same flat list described under
-|ducktape-switching-provider-or-model|, for the chat scope. It sets the default
-for new chats; `<leader>cs` changes a chat already open. Defaults: claude with
-opus + xhigh effort + `default` mode, which is the mode that asks before
-editing.
+Press `<leader>cmc` — the same flat list described under Switching provider
+or model, for the chat scope. It sets the default for new chats; `<leader>cs`
+changes a chat already open. Defaults: claude with opus + xhigh effort +
+`default` mode, which is the mode that asks before editing.
 
 **The chat’s own key line:**
 
