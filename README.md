@@ -1,5 +1,7 @@
 # ducktape.nvim
 
+<img src="assets/ducktape-logo.png" alt="Ducktape logo" width="240">
+
 Inline AI editing and chat sessions on top of [codecompanion.nvim](https://github.com/olimorris/codecompanion.nvim)'s adapters, with one option UX across every provider you configure.
 
 ## What Is Ducktape?
