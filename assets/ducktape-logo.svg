@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 400" role="img" aria-label="Duck in a roll of duct tape">
+  <g id="mark" stroke="#1b1d20" stroke-linecap="round" stroke-linejoin="round">
+    <path id="tail" d="M266 55 C331 48 377 83 391 139 C403 187 395 236 414 285 C425 313 451 333 479 344 L465 354 L471 364 L451 370 L456 380 C410 369 380 345 358 304 C346 283 340 258 337 239 C324 292 290 310 255 314 L225 292 C277 273 307 222 300 161 C295 112 282 77 266 55 Z" fill="#b9babd" stroke-width="9" />
+    <path id="side" d="M257 58 C322 76 351 130 350 196 C349 257 315 298 264 314 L238 305 C290 269 313 230 313 173 C311 123 290 82 257 58 Z" fill="#83878b" stroke-width="8" />
+    <ellipse id="roll" cx="181" cy="190" rx="145" ry="151" fill="#bfc1c4" stroke-width="9" />
+    <ellipse id="ring-outer" cx="181" cy="190" rx="122" ry="129" fill="none" stroke="#a0a4a8" stroke-width="6" />
+    <ellipse id="ring-inner" cx="181" cy="190" rx="101" ry="108" fill="none" stroke="#a0a4a8" stroke-width="6" />
+    <ellipse id="opening" cx="181" cy="190" rx="78" ry="84" fill="#1b1d20" stroke-width="7" />
+    <path id="duck" d="M139 234 C138 202 147 172 163 148 C179 125 205 116 226 126 C251 139 260 169 257 197 C254 227 236 252 214 268 C197 280 170 279 154 267 C144 260 139 248 139 234 Z" fill="#ffffff" stroke-width="8" />
+    <ellipse id="eye" cx="213" cy="177" rx="7" ry="13" fill="#1b1d20" stroke="none" />
+    <path id="bill" d="M159 195 C146 193 139 205 128 211 C116 218 101 220 91 217 C83 216 79 225 84 233 C95 252 121 258 146 255 C165 253 182 245 192 233 C178 226 172 216 168 205 C166 200 163 197 159 195 Z" fill="#f6c82c" stroke-width="8" />
+    <circle id="nostril" cx="158" cy="218" r="4.5" fill="#1b1d20" stroke="none" />
+  </g>
+</svg>
