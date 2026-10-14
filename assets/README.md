@@ -1,3 +1,3 @@
 # Ducktape brand assets
 
-These are local copies for this project's README and other uses. The editable master, other formats, color values, and export script live in [ducktape-brand](https://github.com/adrian729/ducktape-brand).
+These files are local copies for this project. The transparent master, generated formats, and build script live in [ducktape-brand](https://github.com/adrian729/ducktape-brand). The SVGs embed the raster mark; their lettering is outlined vector text.
