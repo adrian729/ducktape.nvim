@@ -1,6 +1,6 @@
 {
   "name": "ducktape.nvim",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Inline editing, chat sessions and a provider layer on top of codecompanion.nvim",
   "dependencies": {
     "nvim-lua/plenary.nvim": ">=0.1.0",
