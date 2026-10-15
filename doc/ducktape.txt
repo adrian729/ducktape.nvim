@@ -1,11 +1,10 @@
 *ducktape.txt*
-                                For NVIM v0.11    Last change: 2026 October 14
+                                For NVIM v0.11    Last change: 2026 October 15
 
 ==============================================================================
 Table of Contents                                 *ducktape-table-of-contents*
 
   - What Is Ducktape?                             |ducktape-what-is-ducktape?|
-  - Table of Contents                             |ducktape-table-of-contents|
   - Getting Started                                 |ducktape-getting-started|
   - Usage                                                     |ducktape-usage|
   - Default Mappings                               |ducktape-default-mappings|
@@ -15,8 +14,8 @@ Table of Contents                                 *ducktape-table-of-contents*
   - Licence                                                 |ducktape-licence|
 1. Keymaps                                                  |ducktape-keymaps|
   - Keymaps                                         |ducktape-keymaps-keymaps|
-2. Usage                                                      |ducktape-usage|
-  - How to use ducktape                   |ducktape-usage-how-to-use-ducktape|
+2. Detailed Usage                                    |ducktape-detailed-usage|
+  - How to use ducktape          |ducktape-detailed-usage-how-to-use-ducktape|
 
 
 
@@ -42,17 +41,6 @@ provider is behind them.
 
 An inline edit settling. Every request is judged code or prose; a reply that
 turns out to be prose is kept and readable instead of thrown away.
-
-
-TABLE OF CONTENTS                                 *ducktape-table-of-contents*
-
-- |ducktape-getting-started|
-- |ducktape-usage|
-- |ducktape-default-mappings|
-- |ducktape-configuration|
-- |ducktape-troubleshooting|
-- |ducktape-contributing|
-- |ducktape-licence|
 
 
 GETTING STARTED                                     *ducktape-getting-started*
@@ -947,10 +935,10 @@ normal-mode only.
 
 
 ==============================================================================
-2. Usage                                                      *ducktape-usage*
+2. Detailed Usage                                    *ducktape-detailed-usage*
 
 
-HOW TO USE DUCKTAPE                       *ducktape-usage-how-to-use-ducktape*
+HOW TO USE DUCKTAPE              *ducktape-detailed-usage-how-to-use-ducktape*
 
 
 INLINE EDITING ~

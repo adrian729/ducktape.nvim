@@ -20,6 +20,8 @@ Inline AI editing and chat sessions on top of [codecompanion.nvim](https://githu
 
 <sub>An inline edit settling. Every request is judged code or prose; a reply that turns out to be prose is kept and readable instead of thrown away.</sub>
 
+<!-- panvimdoc-ignore-start -->
+
 ## Table of Contents
 
 - [Getting Started](#getting-started)
@@ -29,6 +31,8 @@ Inline AI editing and chat sessions on top of [codecompanion.nvim](https://githu
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [Licence](#licence)
+
+<!-- panvimdoc-ignore-end -->
 
 ## Getting Started
 

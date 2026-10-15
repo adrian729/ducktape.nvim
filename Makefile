@@ -1,4 +1,4 @@
-.PHONY: all test lint fmt doc clean
+.PHONY: all test lint fmt doc check-doc clean
 
 all: fmt doc test
 
@@ -35,6 +35,11 @@ doc: .deps/panvimdoc
 		-t .deps/panvimdoc/scripts/panvimdoc.lua \
 		scripts/vimdoc.md \
 		-o doc/ducktape.txt
+	@$(MAKE) --no-print-directory check-doc
+
+# Match the helptags step plugin managers run during installation; fail on duplicate tags.
+check-doc:
+	@nvim --headless -u NONE -c 'lua local ok, err = pcall(vim.cmd, "helptags doc"); if not ok then vim.api.nvim_err_writeln(err); vim.cmd("cquit") end' -c 'qa!'
 
 .deps/panvimdoc:
 	@mkdir -p .deps

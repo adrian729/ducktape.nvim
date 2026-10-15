@@ -7,7 +7,7 @@ README.md
 docs/keymaps.md
 ```
 
-# Usage
+# Detailed Usage
 ```{.include shift-heading-level-by=1}
 docs/how_to_use.md
 ```
